@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AWESOME AI — PRO ULTRA: PostgreSQL (relaxdev), вход по логину+паролю, анализ фото, 40+ фич, ChatGPT-визуал"""
+"""AWESOME AI — PRO VISION: живой 3D-визуал, glassmorphism, PostgreSQL, анализ фото, 40+ фич"""
 import os, re, io, time, json, base64, urllib.parse, hashlib, random, html, uuid as _uuid
 from datetime import datetime, timedelta, timezone
 import requests, urllib3
@@ -22,7 +22,7 @@ except ImportError:
     HAS_PIL = False
 
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "awesome-pro-secret-2026")
+app.secret_key = os.getenv("SECRET_KEY", "awesome-vision-secret-2026")
 app.permanent_session_lifetime = timedelta(days=30)
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 
@@ -30,7 +30,6 @@ YANDEX_API_KEY = os.getenv("YANDEX_API_KEY", "AQVNyfn82epL9dy8C_kftzeypq6eF9lFd6
 FOLDER_ID = os.getenv("FOLDER_ID", "b1g4aq87c7j61c6g3i5l")
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY", "MDFhMDBkNmEtMmExNC03M2JkLWFlZmMtOTQ0OWVlOTc5M2U1OmE1ZWJhM2NlLTQwYjAtNDZlYi1iMmY2LTE3OTFmYzhhYTQ2MA==")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
-
 OWNER_LOGIN, OWNER_PASSWORD = "admin", "qawsedrf2346"
 FREE_LIMIT, MAX_HISTORY = 40, 24
 GIGA_TIMEOUT, YGPT_TIMEOUT, SEARCH_TIMEOUT = 30, 25, 5
@@ -48,45 +47,27 @@ def get_db(): return psycopg2.connect(DATABASE_URL)
 
 # ================= БАЗА =================
 def init_db():
-    conn = get_db(); cur = conn.cursor()
+    conn=get_db(); cur=conn.cursor()
     def ex(sql):
         try: cur.execute(sql); conn.commit()
         except Exception: conn.rollback()
-    # users — user_id TEXT (логин), корректные типы
-    ex("""CREATE TABLE IF NOT EXISTS users(
-        user_id TEXT PRIMARY KEY, login TEXT UNIQUE, name TEXT, password TEXT,
-        premium INTEGER DEFAULT 0, messages_today INTEGER DEFAULT 0, last_reset TEXT,
-        premium_expires TEXT, is_admin INTEGER DEFAULT 0, is_owner INTEGER DEFAULT 0,
-        theme TEXT DEFAULT 'dark', joined_at TEXT, xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1,
-        avatar TEXT DEFAULT '', ref_code TEXT, ref_count INTEGER DEFAULT 0)""")
-    ex("""CREATE TABLE IF NOT EXISTS chats_web(id BIGSERIAL PRIMARY KEY, user_id TEXT,
-        title TEXT DEFAULT 'Новый чат', created_at TEXT, pinned INTEGER DEFAULT 0)""")
-    ex("""CREATE TABLE IF NOT EXISTS messages_web(id BIGSERIAL PRIMARY KEY, chat_id BIGINT,
-        role TEXT, content TEXT, image TEXT, created_at TEXT)""")
+    ex("""CREATE TABLE IF NOT EXISTS users(user_id TEXT PRIMARY KEY, login TEXT UNIQUE, name TEXT, password TEXT,
+        premium INTEGER DEFAULT 0, messages_today INTEGER DEFAULT 0, last_reset TEXT, premium_expires TEXT,
+        is_admin INTEGER DEFAULT 0, is_owner INTEGER DEFAULT 0, theme TEXT DEFAULT 'dark', joined_at TEXT,
+        xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1, avatar TEXT DEFAULT '', ref_code TEXT, ref_count INTEGER DEFAULT 0)""")
+    ex("""CREATE TABLE IF NOT EXISTS chats_web(id BIGSERIAL PRIMARY KEY, user_id TEXT, title TEXT DEFAULT 'Новый чат', created_at TEXT, pinned INTEGER DEFAULT 0)""")
+    ex("""CREATE TABLE IF NOT EXISTS messages_web(id BIGSERIAL PRIMARY KEY, chat_id BIGINT, role TEXT, content TEXT, image TEXT, created_at TEXT)""")
     ex("""CREATE TABLE IF NOT EXISTS total_stats_web(user_id TEXT PRIMARY KEY, total_messages INTEGER DEFAULT 0)""")
     ex("""CREATE TABLE IF NOT EXISTS admin_log(id BIGSERIAL PRIMARY KEY, admin_id TEXT, action TEXT, created_at TEXT)""")
     ex("""CREATE TABLE IF NOT EXISTS notifications(id BIGSERIAL PRIMARY KEY, user_id TEXT, text TEXT, read INTEGER DEFAULT 0, created_at TEXT)""")
     ex("""CREATE TABLE IF NOT EXISTS user_memory(id BIGSERIAL PRIMARY KEY, user_id TEXT, fact TEXT, created_at TEXT)""")
     ex("""CREATE TABLE IF NOT EXISTS web_cache(query TEXT PRIMARY KEY, result TEXT, ts TEXT)""")
-    # страховка типов на случай старой схемы
     try:
-        cur.execute("ALTER TABLE users ALTER COLUMN user_id TYPE TEXT USING user_id::text")
-        cur.execute("ALTER TABLE users ALTER COLUMN premium TYPE INTEGER USING COALESCE(premium::int,0)")
-        cur.execute("ALTER TABLE users ALTER COLUMN messages_today TYPE INTEGER USING COALESCE(messages_today::int,0)")
-        cur.execute("ALTER TABLE users ALTER COLUMN is_admin TYPE INTEGER USING COALESCE(is_admin::int,0)")
-        cur.execute("ALTER TABLE users ALTER COLUMN is_owner TYPE INTEGER USING COALESCE(is_owner::int,0)")
-        cur.execute("ALTER TABLE users ALTER COLUMN xp TYPE INTEGER USING COALESCE(xp::int,0)")
-        cur.execute("ALTER TABLE users ALTER COLUMN level TYPE INTEGER USING COALESCE(level::int,1)")
-        cur.execute("ALTER TABLE users ALTER COLUMN ref_count TYPE INTEGER USING COALESCE(ref_count::int,0)")
-        conn.commit()
-    except Exception: conn.rollback()
-    # владелец
-    try:
-        cur.execute("SELECT user_id FROM users WHERE login=%s", (OWNER_LOGIN,))
+        cur.execute("SELECT user_id FROM users WHERE login=%s",(OWNER_LOGIN,))
         if not cur.fetchone():
             cur.execute("INSERT INTO users(user_id,login,name,password,messages_today,last_reset,is_admin,is_owner,theme,joined_at,xp,level) VALUES(%s,%s,%s,%s,0,%s,1,1,'dark',%s,0,1)",
-                        (OWNER_LOGIN, OWNER_LOGIN, "AWESOME", hash_pw(OWNER_PASSWORD), gm().strftime('%Y-%m-%d'), now_iso()))
-            cur.execute("INSERT INTO total_stats_web(user_id,total_messages) VALUES(%s,0) ON CONFLICT DO NOTHING", (OWNER_LOGIN,))
+                        (OWNER_LOGIN,OWNER_LOGIN,"AWESOME",hash_pw(OWNER_PASSWORD),gm().strftime('%Y-%m-%d'),now_iso()))
+            cur.execute("INSERT INTO total_stats_web(user_id,total_messages) VALUES(%s,0) ON CONFLICT DO NOTHING",(OWNER_LOGIN,))
         conn.commit()
     except Exception: conn.rollback()
     cur.close(); conn.close()
@@ -95,13 +76,13 @@ init_db()
 # ================= АККАУНТЫ =================
 def get_user(uid):
     conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM users WHERE user_id=%s", (str(uid),)); row=cur.fetchone()
-    cur.close(); conn.close(); return dict(row) if row else None
+    cur.execute("SELECT * FROM users WHERE user_id=%s",(str(uid),)); row=cur.fetchone(); cur.close(); conn.close()
+    return dict(row) if row else None
 def get_user_by_login(login):
     conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM users WHERE login=%s", (str(login),)); row=cur.fetchone()
-    cur.close(); conn.close(); return dict(row) if row else None
-def reg_user(login, name, pw):
+    cur.execute("SELECT * FROM users WHERE login=%s",(str(login),)); row=cur.fetchone(); cur.close(); conn.close()
+    return dict(row) if row else None
+def reg_user(login,name,pw):
     login=(login or '').strip(); name=(name or '').strip()
     if not login or len(login)<3: return False,"Логин мин. 3 символа"
     if not name: return False,"Имя обязательно"
@@ -113,10 +94,10 @@ def reg_user(login, name, pw):
         ref=hashlib.md5((login+str(random.random())).encode()).hexdigest()[:8]
         cur.execute("INSERT INTO users(user_id,login,name,password,messages_today,last_reset,is_admin,is_owner,theme,joined_at,xp,level,ref_code) VALUES(%s,%s,%s,%s,0,%s,%s,%s,'dark',%s,0,1,%s)",
                     (login,login,name,hash_pw(pw),gm().strftime('%Y-%m-%d'),owner,owner,now_iso(),ref))
-        cur.execute("INSERT INTO total_stats_web(user_id,total_messages) VALUES(%s,0) ON CONFLICT DO NOTHING", (login,))
+        cur.execute("INSERT INTO total_stats_web(user_id,total_messages) VALUES(%s,0) ON CONFLICT DO NOTHING",(login,))
         conn.commit(); cur.close(); conn.close(); return True,"OK"
     except Exception as e: return False,"Ошибка БД: "+str(e)
-def login_user(login, pw):
+def login_user(login,pw):
     u=get_user_by_login((login or '').strip())
     if not u: return False,"Аккаунт не найден. Зарегистрируйся"
     if u.get('password')!=hash_pw(pw): return False,"Неверный пароль"
@@ -137,28 +118,27 @@ def can_send(uid):
     s=eff_status(uid)
     if s['is_owner'] or s['is_admin'] or s['premium']: return True
     u=get_user(uid) or {}; return int(u.get('messages_today',0) or 0) < FREE_LIMIT
-def upd(uid, **kw):
+def upd(uid,**kw):
     try:
         conn=get_db(); cur=conn.cursor()
         cols=",".join(k+"=%s" for k in kw); vals=[kw[k] for k in kw]+[str(uid)]
-        cur.execute("UPDATE users SET "+cols+" WHERE user_id=%s", vals); conn.commit(); cur.close(); conn.close()
+        cur.execute("UPDATE users SET "+cols+" WHERE user_id=%s",vals); conn.commit(); cur.close(); conn.close()
     except Exception: pass
 def incr(uid):
     u=get_user(uid) or {}; s=eff_status(uid)
     if s['is_owner'] or s['is_admin']: add_xp(uid,5); return
     upd(uid, messages_today=int(u.get('messages_today',0) or 0)+1); add_xp(uid,10)
-def add_xp(uid, amt):
-    u=get_user(uid) or {}; xp=int(u.get('xp',0) or 0)+int(amt)
-    upd(uid, xp=xp, level=1+xp//100)
+def add_xp(uid,amt):
+    u=get_user(uid) or {}; xp=int(u.get('xp',0) or 0)+int(amt); upd(uid, xp=xp, level=1+xp//100)
 
 # ================= ПАМЯТЬ =================
-def get_memory(uid, limit=30):
+def get_memory(uid,limit=30):
     try:
         conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("SELECT fact FROM user_memory WHERE user_id=%s ORDER BY id DESC LIMIT %s",(str(uid),limit))
         rows=cur.fetchall(); cur.close(); conn.close(); return [r['fact'] for r in rows]
     except Exception: return []
-def remember(uid, fact):
+def remember(uid,fact):
     fact=(fact or '').strip()[:500]
     if not fact or len(fact)<4: return
     try:
@@ -167,7 +147,7 @@ def remember(uid, fact):
         if cur.fetchone()[0]==0: cur.execute("INSERT INTO user_memory(user_id,fact,created_at) VALUES(%s,%s,%s)",(str(uid),fact,now_iso()))
         conn.commit(); cur.close(); conn.close()
     except Exception: pass
-def extract_facts(uid, text):
+def extract_facts(uid,text):
     tl=text.lower(); facts=[]
     if "меня зовут" in tl or "мое имя" in tl:
         m=re.search(r'(?:меня зовут|мое имя)[:\s]+([A-Za-zА-Яа-яЁё\-]+)',tl)
@@ -182,7 +162,7 @@ def extract_facts(uid, text):
     for f in facts: remember(uid,f)
 
 # ================= ЧАТЫ =================
-def create_chat(uid, title="Новый чат"):
+def create_chat(uid,title="Новый чат"):
     conn=get_db(); cur=conn.cursor()
     cur.execute("INSERT INTO chats_web(user_id,title,created_at,pinned) VALUES(%s,%s,%s,0) RETURNING id",(str(uid),title,now_iso()))
     cid=cur.fetchone()[0]; conn.commit(); cur.close(); conn.close(); return cid
@@ -190,7 +170,7 @@ def get_chats(uid):
     conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute("SELECT * FROM chats_web WHERE user_id=%s ORDER BY created_at DESC",(str(uid),))
     rows=cur.fetchall(); cur.close(); conn.close(); return [dict(r) for r in rows]
-def add_msg(cid, role, content, image=None):
+def add_msg(cid,role,content,image=None):
     conn=get_db(); cur=conn.cursor()
     cur.execute("INSERT INTO messages_web(chat_id,role,content,image,created_at) VALUES(%s,%s,%s,%s,%s)",(int(cid),role,content or '',image,now_iso()))
     conn.commit(); cur.close(); conn.close()
@@ -213,7 +193,7 @@ def del_chat(uid,cid):
 # ================= НЕЙРОСЕТЬ =================
 tok=None; tok_t=0
 def get_tok():
-    global tok, tok_t
+    global tok,tok_t
     if tok and time.time()-tok_t<180: return tok
     for _ in range(3):
         try:
@@ -227,7 +207,7 @@ def get_tok():
         except Exception: pass
         time.sleep(0.7)
     tok=None; return None
-def giga(hlist, sysp, max_tok=2000):
+def giga(hlist,sysp,max_tok=2000):
     try:
         t=get_tok()
         if not t: return None
@@ -240,7 +220,7 @@ def giga(hlist, sysp, max_tok=2000):
             except Exception: return None
     except Exception: pass
     return None
-def ygpt(text, sysp):
+def ygpt(text,sysp):
     try:
         r=requests.post("https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
             headers={"Authorization":"Api-Key "+YANDEX_API_KEY,"Content-Type":"application/json"},
@@ -272,18 +252,18 @@ SUPER="""ТЫ — AWESOME AI, мощный живой ИИ уровня ChatGPT.
 ФОРМАТ: разделы **1. Название**. Важное **жирным**. Эмодзи.
 Если есть анализ изображения — отвечай по нему."""
 
-def smart_answer(uid, text, history, img_desc=None, doc=None):
+def smart_answer(uid,text,history,img_desc=None,doc=None):
     mem=get_memory(uid)
     sp=SUPER.format(d=gdate(), t=gm().strftime('%H:%M'),
         memory=("Помнишь о пользователе:\n"+"\n".join("• "+f for f in mem)) if mem else "")
     if img_desc: sp += "\n\nАНАЛИЗ ИЗОБРАЖЕНИЯ:\n"+img_desc
     if doc: sp += "\nДокумент: "+doc[:3000]
     tl=(text or "").lower().strip()
-    try: extract_facts(uid, text)
+    try: extract_facts(uid,text)
     except Exception: pass
     a=giga(history+[{"role":"user","content":text or "Опиши"}], sp)
     if a and len(a)>4: return a
-    b=ygpt(text, sp)
+    b=ygpt(text,sp)
     if b and len(b)>4: return b
     if img_desc: return "Я вижу это так:\n\n"+img_desc
     if any(w in tl for w in ["привет","здравств","хай","ку"]): return "Привет! Рад тебя видеть. Чем помогу?"
@@ -366,18 +346,14 @@ def read_pdf(b64):
 # ================= API =================
 @app.route('/favicon.ico')
 def favicon():
-    svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="24" fill="#10a37f"/><path d="M50 20 L80 80 H68 L61 64 H39 L32 80 H20 Z M45 54 H55 L50 42 Z" fill="#fff"/></svg>'
+    svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#10a37f"/><stop offset="1" stop-color="#0e8a6d"/></linearGradient></defs><rect width="100" height="100" rx="24" fill="url(#g)"/><path d="M50 20 L80 80 H68 L61 64 H39 L32 80 H20 Z M45 54 H55 L50 42 Z" fill="#fff"/></svg>'
     return app.response_class(svg, mimetype='image/svg+xml')
-
 @app.route('/')
 def index(): return render_template_string(INDEX_HTML)
-
 @app.route('/api/diag')
 def diag():
-    try:
-        c=get_db(); c.close(); return jsonify({'ok':True,'db':'postgres-ok'})
+    try: c=get_db(); c.close(); return jsonify({'ok':True,'db':'postgres-ok'})
     except Exception as e: return jsonify({'ok':False,'error':str(e)})
-
 @app.route('/api/register', methods=['POST'])
 def api_register():
     try:
@@ -505,7 +481,6 @@ def api_settings():
     if d.get('name'): session['name']=d['name']
     return jsonify({'ok':True})
 
-# ---- Админка ----
 def admin_check():
     uid=session.get('user_id')
     if not uid: return None,False,"Нет авторизации"
@@ -535,25 +510,6 @@ def admin_stats():
     users=cur.fetchall(); cur.close(); conn.close()
     return jsonify({'ok':True,'total':total,'premium':prem,
                     'users':[{'id':r[0],'name':r[1],'premium':r[2],'is_admin':r[3],'expires':r[4],'level':r[5],'xp':r[6]} for r in users]})
-@app.route('/api/resetadmin')
-def resetadmin():
-    """Гарантированно сбрасывает пароль владельца admin на qawsedrf2346."""
-    try:
-        import hashlib
-        good = hashlib.sha256("qawsedrf2346".encode()).hexdigest()
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("SELECT user_id FROM users WHERE login='admin'")
-        exists = cur.fetchone()
-        if exists:
-            cur.execute("UPDATE users SET password=%s, is_admin=1, is_owner=1 WHERE user_id='admin'", (good,))
-        else:
-            cur.execute("INSERT INTO users(user_id,login,name,password,messages_today,last_reset,is_admin,is_owner,theme,joined_at,xp,level) VALUES('admin','admin','AWESOME',%s,0,%s,1,1,'dark',%s,0,1)",
-                        (good, gm().strftime('%Y-%m-%d'), now_iso()))
-            cur.execute("INSERT INTO total_stats_web(user_id,total_messages) VALUES('admin',0) ON CONFLICT DO NOTHING")
-        conn.commit(); cur.close(); conn.close()
-        return jsonify({'ok': True, 'msg': 'Пароль admin сброшен на qawsedrf2346', 'hash': good})
-    except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)})
 @app.route('/api/admin/give',methods=['POST'])
 def admin_give():
     uid,ok,err=admin_check()
@@ -577,70 +533,95 @@ def admin_give():
     except Exception as e: return jsonify({'ok':False,'error':'Ошибка: '+str(e)})
     return jsonify({'ok':True})
 
-# ================= HTML (тёмный ChatGPT + SVG-логотип) =================
+# ================= HTML: ЖИВОЙ 3D ВИЗУАЛ =================
 INDEX_HTML = r"""<!DOCTYPE html><html lang="ru"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Awesome AI</title><link rel="icon" href="/favicon.ico">
 <style>
-:root{--bg:#343541;--side:#202123;--side2:#2a2b32;--border:rgba(255,255,255,.12);--text:#ececf1;--muted:#9b9ba3;--green:#10a37f;--green2:#0e8a6d;--hover:#2f3037}
+:root{--bg:#0b0d14;--side:rgba(20,24,38,.82);--glass:rgba(255,255,255,.06);--border:rgba(255,255,255,.10);--text:#f2f3f7;--muted:#9aa3b8;--green:#10a37f;--green2:#0e8a6d;--accent:#6ea8ff;--purple:#8b5cf6}
 *{margin:0;padding:0;box-sizing:border-box;font-family:'Söhne','Segoe UI',system-ui,sans-serif}
 html,body{height:100%}
 body{background:var(--bg);color:var(--text);overflow:hidden;-webkit-font-smoothing:antialiased}
-.app{display:flex;height:100vh}
-.sidebar{width:260px;background:var(--side);display:flex;flex-direction:column;transition:transform .28s cubic-bezier(.4,0,.2,1);z-index:60}
+/* живой анимированный фон */
+.bg{position:fixed;inset:0;z-index:0;background:radial-gradient(circle at 20% 20%,rgba(16,163,127,.18),transparent 45%),radial-gradient(circle at 80% 30%,rgba(110,168,255,.16),transparent 45%),radial-gradient(circle at 60% 90%,rgba(139,92,246,.15),transparent 45%),#0b0d14;animation:bgShift 16s ease-in-out infinite alternate}
+@keyframes bgShift{0%{filter:hue-rotate(0deg) saturate(1)}100%{filter:hue-rotate(30deg) saturate(1.25)}}
+.orbs{position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none}
+.orb{position:absolute;border-radius:50%;filter:blur(60px);opacity:.35;animation:float 12s ease-in-out infinite}
+.orb1{width:360px;height:360px;background:#10a37f;top:-80px;left:-80px}.orb2{width:420px;height:420px;background:#6ea8ff;bottom:-100px;right:-60px;animation-delay:-4s}.orb3{width:300px;height:300px;background:#8b5cf6;top:40%;left:60%;animation-delay:-8s}
+@keyframes float{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(30px,-30px) scale(1.15)}}
+.app{position:relative;z-index:2;display:flex;height:100vh}
+.sidebar{width:270px;background:var(--side);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border-right:1px solid var(--border);display:flex;flex-direction:column;transition:transform .3s cubic-bezier(.4,0,.2,1);z-index:60}
 .sidebar.closed{transform:translateX(-100%);width:0;min-width:0}
-.new-chat{margin:10px;padding:11px 13px;background:transparent;border:1px solid var(--border);border-radius:8px;color:#fff;cursor:pointer;font-size:13.5px;display:flex;align-items:center;gap:8px}.new-chat:hover{background:var(--side2)}
+.new-chat{margin:12px;padding:13px 15px;background:linear-gradient(135deg,var(--green),var(--green2));border:none;border-radius:12px;color:#fff;cursor:pointer;font-size:14px;font-weight:600;display:flex;align-items:center;gap:9px;transition:transform .18s,box-shadow .25s;box-shadow:0 4px 18px rgba(16,163,127,.35)}
+.new-chat:hover{transform:translateY(-2px);box-shadow:0 8px 28px rgba(16,163,127,.5)}
+.new-chat:active{transform:scale(.97)}
 .chat-list{flex:1;overflow-y:auto;padding:4px 8px}
-.chat-item{padding:10px 12px;border-radius:8px;cursor:pointer;margin-bottom:2px;font-size:13.5px;display:flex;align-items:center;gap:9px}.chat-item:hover,.chat-item.active{background:var(--side2)}
-.chat-item .t{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chat-item .del{opacity:0;background:none;border:none;color:var(--muted);cursor:pointer}.chat-item:hover .del{opacity:1}
-.side-foot{padding:8px;border-top:1px solid var(--border)}
-.side-btn{display:flex;align-items:center;gap:9px;width:100%;padding:9px 10px;border:none;background:none;color:var(--text);cursor:pointer;font-size:13.5px;border-radius:8px;text-align:left}.side-btn:hover{background:var(--side2)}
-.side-btn .ic{width:28px;height:28px;border-radius:6px;background:var(--green);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:14px;flex-shrink:0;overflow:hidden}
+.chat-item{padding:11px 13px;border-radius:10px;cursor:pointer;margin-bottom:3px;font-size:13.5px;display:flex;align-items:center;gap:9px;border:1px solid transparent;transition:all .15s}
+.chat-item:hover{border-color:var(--border);background:var(--glass)}
+.chat-item.active{background:linear-gradient(135deg,rgba(16,163,127,.15),transparent);border-color:rgba(16,163,127,.4)}
+.chat-item .t{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat-item .del{opacity:0;background:none;border:none;color:var(--muted);cursor:pointer}.chat-item:hover .del{opacity:1}
+.side-foot{padding:10px;border-top:1px solid var(--border)}
+.side-btn{display:flex;align-items:center;gap:10px;width:100%;padding:10px 12px;border:none;background:transparent;color:var(--text);cursor:pointer;font-size:13.5px;border-radius:10px;transition:background .15s;text-align:left}
+.side-btn:hover{background:var(--glass)}
+.side-btn .ic{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--green),var(--purple));color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;flex-shrink:0;box-shadow:0 3px 10px rgba(16,163,127,.3);overflow:hidden}
 .main{flex:1;display:flex;flex-direction:column;min-width:0}
-.topbar{height:48px;display:flex;align-items:center;gap:8px;padding:0 16px;border-bottom:1px solid var(--border);flex-shrink:0}
-.burger{background:none;border:none;color:var(--text);font-size:19px;cursor:pointer;padding:6px;border-radius:6px}.burger:hover{background:var(--hover)}
-.topbar .ct{flex:1;text-align:center;font-size:14px;color:var(--muted)}
-.messages{flex:1;overflow-y:auto}
-.welcome{max-width:760px;margin:0 auto;padding:9vh 24px 24px;text-align:center;animation:fadeUp .5s ease}
-@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
-.welcome h1{font-size:clamp(26px,5vw,38px);font-weight:600;margin-bottom:10px}
-.welcome p{color:var(--muted);font-size:16px;margin-bottom:28px}
-.sugg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;max-width:680px;margin:0 auto}
-.sugg{border:1px solid var(--border);border-radius:12px;padding:15px;cursor:pointer;font-size:13px;color:var(--muted);text-align:left;background:var(--bg)}.sugg:hover{background:var(--hover)}
-.msgrow{display:flex;gap:14px;padding:18px 22px;border-bottom:1px solid var(--border);animation:fadeUp .25s ease}
-.msgrow.user{background:var(--bg)}.msgrow.ai{background:var(--side)}
-.msgrow .mb{max-width:780px;width:100%;margin:0 auto;font-size:15.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
-.msgrow .mb b{font-weight:600}.msgrow .mb .h{display:block;font-weight:600;font-size:17px;margin:16px 0 5px}.msgrow .mb .h:first-child{margin-top:0}
-.msgrow .ma{width:30px;height:30px;border-radius:6px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:600}
-.msgrow.user .ma{background:var(--green);color:#fff}.msgrow .mb img{max-width:100%;border-radius:10px;margin-top:8px}
-.typing span{display:inline-block;width:7px;height:7px;border-radius:50%;background:#999;margin-right:4px;animation:blink 1.2s infinite}.typing span:nth-child(2){animation-delay:.2s}.typing span:nth-child(3){animation-delay:.4s}
-@keyframes blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
-.inputarea{padding:12px 22px;background:var(--bg);flex-shrink:0}
-.attach-preview{max-width:780px;margin:0 auto 8px;display:none;gap:8px;align-items:center;background:var(--side);border:1px solid var(--border);border-radius:13px;padding:7px}
-.attach-preview img{width:48px;height:48px;object-fit:cover;border-radius:7px}.attach-preview .an{flex:1;font-size:13px;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.attach-preview .rm{background:none;border:none;color:var(--muted);cursor:pointer;font-size:17px}
-.inputwrap{max-width:780px;margin:0 auto;display:flex;align-items:flex-end;gap:6px;background:var(--side2);border:1px solid var(--border);border-radius:24px;padding:9px 10px}.inputwrap:focus-within{box-shadow:0 0 0 1px var(--green)}
+.topbar{height:50px;display:flex;align-items:center;gap:8px;padding:0 18px;border-bottom:1px solid var(--border);backdrop-filter:blur(12px);flex-shrink:0}
+.burger{background:none;border:none;color:var(--text);font-size:20px;cursor:pointer;padding:7px;border-radius:8px;transition:transform .2s}.burger:hover{transform:scale(1.15)}
+.topbar .ct{flex:1;text-align:center;font-size:14px;color:var(--muted);font-weight:500}
+.messages{flex:1;overflow-y:auto;padding:20px}
+.welcome{max-width:780px;margin:0 auto;padding:8vh 20px 20px;text-align:center;animation:fadeUp .6s ease}
+@keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
+.welcome h1{font-size:clamp(28px,5vw,42px);font-weight:700;margin-bottom:12px;background:linear-gradient(135deg,#10a37f,#6ea8ff,#8b5cf6);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;filter:drop-shadow(0 4px 18px rgba(16,163,127,.3))}
+.welcome p{color:var(--muted);font-size:16px;margin-bottom:30px}
+.sugg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;max-width:700px;margin:0 auto}
+.sugg{border:1px solid var(--border);border-radius:14px;padding:17px;cursor:pointer;font-size:13px;color:var(--muted);text-align:left;background:var(--glass);backdrop-filter:blur(10px);transition:all .2s;border-top:1px solid rgba(255,255,255,.2)}
+.sugg:hover{transform:translateY(-5px) scale(1.02);border-color:rgba(16,163,127,.5);box-shadow:0 10px 30px rgba(16,163,127,.25);color:var(--text)}
+.sugg:active{transform:scale(.95)}
+.sugg .e{font-size:26px;display:block;margin-bottom:9px;filter:drop-shadow(0 4px 8px rgba(0,0,0,.4))}
+.msgrow{display:flex;gap:14px;padding:20px 22px;border-radius:16px;margin-bottom:12px;animation:fadeUp .3s ease;max-width:840px;margin-left:auto;margin-right:auto}
+.msgrow.user{background:linear-gradient(135deg,rgba(16,163,127,.14),transparent);border:1px solid rgba(16,163,127,.3)}
+.msgrow.ai{background:var(--glass);border:1px solid var(--border);backdrop-filter:blur(14px)}
+.msgrow .mb{width:100%;font-size:15.5px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
+.msgrow .mb b{color:var(--accent);font-weight:600}.msgrow .mb .h{display:block;font-weight:700;font-size:17px;margin:16px 0 5px;color:var(--accent)}
+.msgrow .ma{width:32px;height:32px;border-radius:9px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:700}
+.msgrow.user .ma{background:linear-gradient(135deg,var(--green),var(--purple));color:#fff;box-shadow:0 4px 14px rgba(16,163,127,.4)}
+.msgrow .mb img{max-width:100%;border-radius:12px;margin-top:8px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.typing span{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin-right:5px;animation:blink 1.2s infinite}
+.typing span:nth-child(2){animation-delay:.2s}.typing span:nth-child(3){animation-delay:.4s}
+@keyframes blink{0%,80%,100%{opacity:.2;transform:translateY(0)}40%{opacity:1;transform:translateY(-4px)}}
+.inputarea{padding:14px 22px;flex-shrink:0}
+.attach-preview{max-width:820px;margin:0 auto 9px;display:none;gap:9px;align-items:center;background:var(--glass);border:1px solid var(--border);border-radius:13px;padding:8px;animation:fadeUp .2s}
+.attach-preview img{width:50px;height:50px;object-fit:cover;border-radius:9px}.attach-preview .an{flex:1;font-size:13px;color:var(--muted)}.attach-preview .rm{background:none;border:none;color:var(--muted);cursor:pointer;font-size:17px}
+.inputwrap{max-width:820px;margin:0 auto;display:flex;align-items:flex-end;gap:6px;background:var(--side);backdrop-filter:blur(16px);border:1px solid var(--border);border-radius:26px;padding:10px 12px;transition:box-shadow .25s,border-color .25s}
+.inputwrap:focus-within{border-color:var(--green);box-shadow:0 0 0 2px rgba(16,163,127,.25),0 8px 30px rgba(16,163,127,.15)}
 textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:15px;resize:none;max-height:150px;line-height:1.5}
-.tbtn{background:none;border:none;color:var(--muted);width:32px;height:32px;border-radius:8px;cursor:pointer;font-size:16px}.tbtn:hover{background:var(--hover)}
-.sendbtn{width:32px;height:32px;border-radius:50%;background:var(--green);border:none;color:#fff;cursor:pointer;font-size:14px;flex-shrink:0;opacity:.5}.sendbtn.on{opacity:1}.sendbtn:hover{background:var(--green2)}
-.foot{max-width:780px;margin:6px auto 0;text-align:center;font-size:11.5px;color:var(--muted)}.foot a{color:var(--green);text-decoration:none}
-.overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:100;display:flex;align-items:center;justify-content:center;padding:16px;opacity:0;visibility:hidden;transition:opacity .22s,visibility .22s}
+.tbtn{background:none;border:none;color:var(--muted);width:34px;height:34px;border-radius:9px;cursor:pointer;font-size:17px;transition:all .15s}.tbtn:hover{background:var(--glass);color:var(--text);transform:scale(1.1)}
+.sendbtn{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--green),var(--green2));border:none;color:#fff;cursor:pointer;font-size:15px;flex-shrink:0;opacity:.5;transition:all .2s;box-shadow:0 3px 12px rgba(16,163,127,.3)}
+.sendbtn.on{opacity:1}.sendbtn:hover{transform:scale(1.1)}.sendbtn:active{transform:scale(.9)}
+.foot{max-width:820px;margin:7px auto 0;text-align:center;font-size:11.5px;color:var(--muted)}.foot a{color:var(--green);text-decoration:none}
+.overlay{position:fixed;inset:0;background:rgba(8,10,18,.7);backdrop-filter:blur(6px);z-index:100;display:flex;align-items:center;justify-content:center;padding:16px;opacity:0;visibility:hidden;transition:opacity .25s,visibility .25s}
 .overlay.show{opacity:1;visibility:visible}
-.modal{background:var(--side);border:1px solid var(--border);border-radius:16px;padding:26px;width:100%;max-width:410px;text-align:center;transform:scale(.95);opacity:0;transition:transform .24s,opacity .22s}.overlay.show .modal{transform:scale(1);opacity:1}
-.modal.wide{max-width:560px}
-.modal h2{margin-bottom:6px;font-size:20px}.modal p{color:var(--muted);font-size:14px;margin-bottom:16px}
-.tabs{display:flex;background:var(--bg);border-radius:8px;padding:4px;margin-bottom:16px}
-.tab{flex:1;padding:8px;border-radius:6px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-weight:500;font-size:14px}.tab.active{background:var(--side2);color:#fff}
-.inp{width:100%;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:15px;margin-bottom:10px;outline:none}.inp:focus{border-color:var(--green)}
-.btn{width:100%;padding:12px;border:none;border-radius:8px;background:var(--green);color:#fff;font-weight:600;font-size:15px;cursor:pointer;margin-bottom:8px}.btn:hover{background:var(--green2)}
-.btn.ghost{background:var(--bg);color:var(--text);border:1px solid var(--border)}
-.logo-xl{width:54px;height:54px;border-radius:14px;background:linear-gradient(135deg,#10a37f,#0e8a6d);color:#fff;display:flex;align-items:center;justify-content:center;margin:0 auto 14px;box-shadow:0 8px 24px rgba(16,163,127,.35)}
-.row{display:flex;gap:8px;align-items:center;margin-bottom:10px}.row label{flex:1;text-align:left;font-size:14px;color:var(--muted)}
-.cookie{position:fixed;bottom:0;left:0;right:0;background:var(--side);border-top:1px solid var(--border);padding:14px 20px;z-index:200;display:flex;align-items:center;gap:14px;justify-content:space-between;transform:translateY(120%);transition:transform .35s}
-.cookie.show{transform:translateY(0)}.cookie p{font-size:13px;color:var(--muted)}.cookie .cb{background:var(--green);color:#fff;border:none;border-radius:8px;padding:9px 18px;cursor:pointer;font-weight:600;white-space:nowrap}
-.toast{position:fixed;top:18px;right:18px;background:var(--side);border:1px solid var(--border);border-radius:10px;padding:12px 16px;z-index:400;font-size:14px;transform:translateX(130%);transition:transform .3s}.toast.show{transform:translateX(0)}.toast.err{border-color:#e5484d}.toast.ok{border-color:var(--green)}
-::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:#565869;border-radius:4px}
-@media(max-width:768px){.sidebar{position:fixed;left:0;top:0;bottom:0;transform:translateX(-100%)}.sidebar.open{transform:translateX(0)}.msgrow{padding:14px}.cookie{flex-direction:column;align-items:flex-start}}
+.modal{background:linear-gradient(160deg,rgba(24,29,44,.95),rgba(15,18,30,.95));border:1px solid var(--border);border-radius:20px;padding:28px;width:100%;max-width:420px;text-align:center;transform:scale(.9) translateY(12px);opacity:0;transition:transform .3s cubic-bezier(.34,1.56,.64,1),opacity .25s;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.overlay.show .modal{transform:scale(1) translateY(0);opacity:1}
+.modal.wide{max-width:580px}
+.modal h2{margin-bottom:7px;font-size:21px}.modal p{color:var(--muted);font-size:14px;margin-bottom:17px}
+.tabs{display:flex;background:rgba(255,255,255,.05);border-radius:10px;padding:5px;margin-bottom:17px}
+.tab{flex:1;padding:9px;border-radius:8px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;font-size:14px;transition:all .18s}.tab.active{background:linear-gradient(135deg,var(--green),var(--purple));color:#fff;box-shadow:0 3px 12px rgba(16,163,127,.3)}
+.inp{width:100%;padding:13px;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:11px;color:var(--text);font-size:15px;margin-bottom:11px;outline:none;transition:border-color .2s}.inp:focus{border-color:var(--green);box-shadow:0 0 0 2px rgba(16,163,127,.2)}
+.btn{width:100%;padding:13px;border:none;border-radius:11px;background:linear-gradient(135deg,var(--green),var(--green2));color:#fff;font-weight:600;font-size:15px;cursor:pointer;margin-bottom:9px;transition:all .18s;box-shadow:0 4px 16px rgba(16,163,127,.3)}
+.btn:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(16,163,127,.45)}
+.btn.ghost{background:rgba(255,255,255,.06);color:var(--text);border:1px solid var(--border)}
+.logo-xl{width:58px;height:58px;border-radius:16px;background:linear-gradient(135deg,#10a37f,#6ea8ff,#8b5cf6);color:#fff;display:flex;align-items:center;justify-content:center;margin:0 auto 15px;box-shadow:0 10px 30px rgba(16,163,127,.4)}
+.row{display:flex;gap:9px;align-items:center;margin-bottom:11px}.row label{flex:1;text-align:left;font-size:14px;color:var(--muted)}
+.cookie{position:fixed;bottom:0;left:0;right:0;background:var(--side);backdrop-filter:blur(16px);border-top:1px solid var(--border);padding:15px 22px;z-index:200;display:flex;align-items:center;gap:15px;justify-content:space-between;transform:translateY(120%);transition:transform .4s cubic-bezier(.34,1.56,.64,1)}
+.cookie.show{transform:translateY(0)}.cookie p{font-size:13px;color:var(--muted)}.cookie .cb{background:linear-gradient(135deg,var(--green),var(--green2));color:#fff;border:none;border-radius:9px;padding:10px 20px;cursor:pointer;font-weight:600;white-space:nowrap}
+.toast{position:fixed;top:20px;right:20px;background:var(--side);backdrop-filter:blur(14px);border:1px solid var(--border);border-radius:12px;padding:13px 17px;z-index:400;font-size:14px;box-shadow:0 8px 30px rgba(0,0,0,.4);transform:translateX(130%);transition:transform .35s cubic-bezier(.34,1.56,.64,1)}
+.toast.show{transform:translateX(0)}.toast.err{border-color:#e5484d}.toast.ok{border-color:var(--green)}
+::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:linear-gradient(var(--green),var(--purple));border-radius:4px}
+@media(max-width:768px){.sidebar{position:fixed;left:0;top:0;bottom:0;transform:translateX(-100%)}.sidebar.open{transform:translateX(0)}.msgrow{padding:16px}.cookie{flex-direction:column;align-items:flex-start}}
 </style></head><body>
+<div class="bg"></div><div class="orbs"><div class="orb orb1"></div><div class="orb orb2"></div><div class="orb orb3"></div></div>
 <div class="app">
 <aside class="sidebar" id="sidebar">
 <button class="new-chat" onclick="newChat()">✏️ Новый чат</button>
@@ -655,12 +636,12 @@ textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-
 <div class="welcome" id="welcome">
 <h1>Чем я могу помочь?</h1><p>Твой умный собеседник нового поколения</p>
 <div class="sugg-grid">
-<button class="sugg" onclick="send('Объясни простыми словами квантовые вычисления')">🔬 Объясни простыми словами</button>
-<button class="sugg" onclick="send('Напиши код на Python для бота')">💻 Напиши код</button>
-<button class="sugg" onclick="send('Составь план на день')">📋 Составь план</button>
-<button class="sugg" onclick="send('погода в Москве')">🌤 Погода</button>
-<button class="sugg" onclick="send('курс доллара')">💵 Курс валют</button>
-<button class="sugg" onclick="send('придумай название для кофейни')">☕ Идеи названий</button>
+<button class="sugg" onclick="send('Объясни простыми словами квантовые вычисления')"><span class="e">🔬</span>Объясни простыми словами</button>
+<button class="sugg" onclick="send('Напиши код на Python для бота')"><span class="e">💻</span>Напиши код</button>
+<button class="sugg" onclick="send('Составь план на день')"><span class="e">📋</span>Составь план</button>
+<button class="sugg" onclick="send('погода в Москве')"><span class="e">🌤</span>Погода</button>
+<button class="sugg" onclick="send('курс доллара')"><span class="e">💵</span>Курс валют</button>
+<button class="sugg" onclick="send('придумай название для кофейни')"><span class="e">☕</span>Идеи названий</button>
 </div></div></div>
 <div class="inputarea">
 <div class="attach-preview" id="attachPreview"><img id="attachImg"><span class="an" id="attachName"></span><button class="rm" onclick="removeAttach()">✕</button></div>
@@ -678,7 +659,7 @@ textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-
 
 <div class="overlay" id="authOverlay">
 <div class="modal">
-<div class="logo-xl"><svg width="34" height="34" viewBox="0 0 100 100"><path d="M50 20 L80 80 H68 L61 64 H39 L32 80 H20 Z M45 54 H55 L50 42 Z" fill="#fff"/></svg></div>
+<div class="logo-xl"><svg width="36" height="36" viewBox="0 0 100 100"><path d="M50 20 L80 80 H68 L61 64 H39 L32 80 H20 Z M45 54 H55 L50 42 Z" fill="#fff"/></svg></div>
 <div class="tabs"><button class="tab active" id="tabLogin" onclick="switchTab('login')">Вход</button><button class="tab" id="tabReg" onclick="switchTab('reg')">Регистрация</button></div>
 <h2 id="authTitle">Вход</h2><p id="authSub">Войди, чтобы продолжить</p>
 <div id="regWrap" style="display:none"><input class="inp" id="regName" placeholder="Имя"></div>
@@ -695,7 +676,6 @@ textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-
 <div class="overlay" id="settingsOverlay">
 <div class="modal wide"><h2>⚙️ Настройки аккаунта</h2><p>Персонализация</p>
 <div class="row"><label>Имя</label><input class="inp" id="setName" style="margin:0;flex:1.4" placeholder="Имя"></div>
-<div class="row"><label>Тема</label><select class="inp" id="setTheme" style="margin:0;flex:1.4"><option value="dark">🌙 Тёмная</option><option value="light">☀️ Светлая</option></select></div>
 <div id="profInfo" style="font-size:13px;color:var(--muted);margin:12px 0;text-align:left"></div>
 <button class="btn" onclick="saveSettings()">Сохранить</button>
 <button class="btn ghost" onclick="logout()">Выйти</button>
@@ -713,7 +693,7 @@ async function submitAuth(){const login=$('authLogin').value.trim(),pw=$('authPa
 async function logout(){await api('/api/logout','POST');location.reload()}
 async function init(){const me=await api('/api/me');if(me.ok){uid=me.user_id;$('authOverlay').classList.remove('show');if(me.avatar)$('avBox').innerHTML='<img style="width:100%;height:100%;object-fit:cover" src="'+me.avatar+'">';else $('avBox').textContent=String(me.name||'?').slice(0,1).toUpperCase();$('uName').textContent=me.name||'Пользователь';await loadChats();await checkStatus()}else openOv('authOverlay')}
 async function checkStatus(){const r=await api('/api/status');if(r.ok)$('uStatus').textContent=r.status_text+' · Ур.'+r.level}
-async function loadChats(){const r=await api('/api/chats');if(!r.ok)return;const l=$('chatList');l.innerHTML='';r.chats.forEach(c=>{const d=document.createElement('div');d.className='chat-item'+(c.id===cid?' active':'');d.innerHTML='💬<span class="t">'+esc(c.title||'Чат')+'</span><button class="del" onclick="delChat('+c.id+',event)">✕</button>';d.onclick=()=>openChat(c);l.appendChild(d)})}
+async function loadChats(){const r=await api('/api/chats');const chats=(r&&r.ok&&Array.isArray(r.chats))?r.chats:[];const l=$('chatList');l.innerHTML='';chats.forEach(c=>{const d=document.createElement('div');d.className='chat-item'+(c.id===cid?' active':'');d.innerHTML='💬<span class="t">'+esc(c.title||'Чат')+'</span><button class="del" onclick="delChat('+c.id+',event)">✕</button>';d.onclick=()=>openChat(c);l.appendChild(d)})}
 function openChat(c){cid=c.id;$('messages').innerHTML='';$('welcome').style.display='none';$('ctTitle').textContent=c.title||'Чат';(c.messages||[]).forEach(m=>addMsg(m.role,m.content,m.image));if(innerWidth<=768)toggleSidebar()}
 async function newChat(){const r=await api('/api/chat/new','POST');if(r.ok){cid=r.chat_id;$('messages').innerHTML='';$('welcome').style.display='';$('ctTitle').textContent='Новый чат';loadChats()}}
 async function delChat(id,e){e.stopPropagation();await api('/api/chat/delete','POST',{chat_id:id});if(id===cid){cid=null;boxReset()}loadChats()}
@@ -730,13 +710,13 @@ function handleFile(inp){const f=inp.files[0];if(!f)return;const reader=new File
 function removeAttach(){attachedImage=null;$('attachPreview').style.display='none'}
 async function draw(){const p=prompt('🎨 Что нарисовать?');if(!p)return;addMsg('user','🎨 '+p);sending=true;addTyping();const r=await api('/api/draw','POST',{prompt:p});rmTyping();sending=false;if(r.ok&&r.image)addMsg('ai','Готово!',r.image);else addMsg('ai','⚠️ '+(r.error||'Не удалось'))}
 function openSupport(){openOv('supportOverlay')}
-async function openSettings(){const r=await api('/api/profile');if(r.ok){$('setName').value=r.name||'';$('setTheme').value=r.theme||'dark';$('profInfo').innerHTML='ID: <b>'+esc(r.user_id)+'</b><br>'+(r.premium?'💎 Premium до '+esc(r.premium_expires):'🔓 Free')+'<br>⭐ Уровень '+r.level+' · XP '+r.xp}openOv('settingsOverlay')}
-async function saveSettings(){const r=await api('/api/settings','POST',{name:$('setName').value.trim()||undefined,theme:$('setTheme').value});if(r.ok){closeOv('settingsOverlay');toast('Сохранено','ok');init()}}
+async function openSettings(){const r=await api('/api/profile');if(r.ok){$('setName').value=r.name||'';$('profInfo').innerHTML='ID: <b>'+esc(r.user_id)+'</b><br>'+(r.premium?'💎 Premium до '+esc(r.premium_expires):'🔓 Free')+'<br>⭐ Уровень '+r.level+' · XP '+r.xp}openOv('settingsOverlay')}
+async function saveSettings(){const r=await api('/api/settings','POST',{name:$('setName').value.trim()||undefined});if(r.ok){closeOv('settingsOverlay');toast('Сохранено','ok');init()}}
 function acceptCookie(){$('cookie').classList.remove('show');try{localStorage.setItem('sc_cookie','1')}catch(e){}}
 document.addEventListener('DOMContentLoaded',()=>{init();try{if(!localStorage.getItem('sc_cookie'))setTimeout(()=>$('cookie').classList.add('show'),800)}catch(e){}});
 </script></body></html>"""
 
 if __name__ == '__main__':
-    print("AWESOME AI — PRO ULTRA (PostgreSQL relaxdev)")
+    print("AWESOME AI — PRO VISION (живой 3D-визуал)")
     port = int(os.getenv("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
