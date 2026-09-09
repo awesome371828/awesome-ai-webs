@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-ы
 """AWESOME AI WEB — ULTRA v2: вход по имени+логину+паролю, ChatGPT-интерфейс, память, поиск, 40+ функций"""
 import os, re, io, time, json, base64, urllib.parse, hashlib, random, html, uuid as _uuid
 from datetime import datetime, timedelta, timezone
