@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AWESOME AI WEB — PRO ULTRA: Telegram-вход, память, поиск, 40+ функций"""
-import os, re, io, time, json, base64, urllib.parse, hashlib, random, html, uuid as _uuid, hmac
+"""AWESOME AI WEB — ULTRA v2: вход по имени+логину+паролю, ChatGPT-интерфейс, память, поиск, 40+ функций"""
+import os, re, io, time, json, base64, urllib.parse, hashlib, random, html, uuid as _uuid
 from datetime import datetime, timedelta, timezone
 import requests, urllib3
 import psycopg2, psycopg2.extras
@@ -16,37 +16,32 @@ except ImportError:
         kw.pop("years", None); kw.pop("months", None)
         return timedelta(**kw)
 try:
-    from supabase import create_client
-    HAS_SUPABASE = True
-except ImportError:
-    HAS_SUPABASE = False
-    def create_client(*a, **k): return None
-try:
     from PIL import Image
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
 
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY","awesome-ai-super-secret-key-2026")
+app.secret_key = os.getenv("SECRET_KEY", "awesome-ai-super-secret-key-2026")
 app.permanent_session_lifetime = timedelta(days=30)
-app.config['SESSION_COOKIE_HTTPONLY']=True
+app.config['SESSION_COOKIE_HTTPONLY'] = True
 
-YANDEX_API_KEY = os.getenv("YANDEX_API_KEY","AQVNyfn82epL9dy8C_kftzeypq6eF9lFd6SZnFzV")
-FOLDER_ID = os.getenv("FOLDER_ID","b1g4aq87c7j61c6g3i5l")
-GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY","MDFhMDBkNmEtMmExNC03M2JkLWFlZmMtOTQ0OWVlOTc5M2U1OmE1ZWJhM2NlLTQwYjAtNDZlYi1iMmY2LTE3OTFmYzhhYTQ2MA==")
-SUPABASE_URL = os.getenv("SUPABASE_URL","https://lprxbmshmuucymkgaqwk.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY","eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxwcnhibXNobXV1Y3lta2dhcXdrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY3NDk0MjgsImV4cCI6MjEwMjMyNTQyOH0.Ie9jSH5RMxeOq8aU-Dv6MXlojWMUTOLE723Hdg6heZU")
-DATABASE_URL = os.getenv("DATABASE_URL","postgresql://u_cmsu43cr30:3sdZICdPDoR1DUrRRKsJ8yW1BqrH2PvZ@db-team-cmsu3ykqi0295mo01tsv8m15p:5432/db_awesome_ai_web")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN","8336209662:AAHdhYXhqWA-LtthwgydDSRU7A6A0ceC-HY")
+# ============ КЛЮЧИ (фиксированные) ============
+YANDEX_API_KEY   = os.getenv("YANDEX_API_KEY", "AQVNyfn82epL9dy8C_kftzeypq6eF9lFd6SZnFzV")
+FOLDER_ID        = os.getenv("FOLDER_ID", "b1g4aq87c7j61c6g3i5l")
+GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY", "MDFhMDBkNmEtMmExNC03M2JkLWFlZmMtOTQ0OWVlOTc5M2U1OmE1ZWJhM2NlLTQwYjAtNDZlYi1iMmY2LTE3OTFmYzhhYTQ2MA==")
+DATABASE_URL     = os.getenv("DATABASE_URL", "postgresql://u_cmsu43cr30:3sdZICdPDoR1DUrRRKsJ8yW1BqrH2PvZ@db-team-cmsu3ykqi0295mo01tsv8m15p:5432/db_awesome_ai_web")
 
-OWNER_ID = 6652898792
-FREE_LIMIT = 40
+# Владелец сайта — создаётся автоматически при первом запуске
+OWNER_LOGIN    = os.getenv("OWNER_LOGIN", "admin")
+OWNER_PASSWORD = os.getenv("OWNER_PASSWORD", "qawsedrf2346")
+OWNER_NAME     = "AWESOME"
+
+FREE_LIMIT  = 40
 MAX_HISTORY = 24
 GIGA_TIMEOUT = 30
 YGPT_TIMEOUT = 25
 SEARCH_TIMEOUT = 4
-TG_BOT = "@awesomeneiro_bot"
 
 MOSCOW_TZ = timezone(timedelta(hours=3))
 def gm(): return datetime.now(MOSCOW_TZ)
@@ -54,22 +49,19 @@ def gdate(): return gm().strftime('%d.%m.%Y')
 def now_iso(): return gm().strftime('%Y-%m-%d %H:%M:%S')
 def fmt_date(s):
     if not s: return "—"
-    try: return datetime.strptime(s,'%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y %H:%M')
+    try: return datetime.strptime(s, '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y %H:%M')
     except: return s
 def hash_pw(p): return hashlib.sha256(p.encode()).hexdigest()
 def get_db(): return psycopg2.connect(DATABASE_URL)
-def is_owner(uid=None, tg=None):
-    if uid and str(uid)==str(OWNER_ID): return True
-    if tg and str(tg)==str(OWNER_ID): return True
-    return False
 
+# ============ БАЗА ДАННЫХ ============
 def init_db():
-    conn=get_db(); cur=conn.cursor()
+    conn = get_db(); cur = conn.cursor()
     def ex(sql, args=None):
         try: cur.execute(sql, args or ()); conn.commit()
         except Exception: conn.rollback()
     ex("""CREATE TABLE IF NOT EXISTS users(
-        user_id TEXT PRIMARY KEY, name TEXT, password TEXT, telegram_id TEXT,
+        user_id TEXT PRIMARY KEY, login TEXT UNIQUE, name TEXT, password TEXT,
         premium INTEGER DEFAULT 0, messages_today INTEGER DEFAULT 0, last_reset TEXT,
         premium_expires TEXT, is_admin INTEGER DEFAULT 0, is_owner INTEGER DEFAULT 0,
         theme TEXT DEFAULT 'dark', joined_at TEXT, xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1,
@@ -85,350 +77,309 @@ def init_db():
     ex("""CREATE TABLE IF NOT EXISTS user_memory(id BIGSERIAL PRIMARY KEY, user_id TEXT,
         fact TEXT, source TEXT DEFAULT 'auto', created_at TEXT)""")
     ex("""CREATE TABLE IF NOT EXISTS web_cache(query TEXT PRIMARY KEY, result TEXT, ts TEXT)""")
-    for col in ['xp','level','avatar','ref_code','ref_count','telegram_id','name','password']:
+    for col in ['login', 'name', 'password', 'avatar', 'ref_code', 'ref_count']:
         ex(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} TEXT DEFAULT ''")
     ex("ALTER TABLE chats_web ADD COLUMN IF NOT EXISTS pinned INTEGER DEFAULT 0")
     ex("ALTER TABLE messages_web ADD COLUMN IF NOT EXISTS image TEXT")
     try:
         cur.execute("SELECT data_type FROM information_schema.columns WHERE table_name='users' AND column_name='xp'")
-        row=cur.fetchone()
-        if row and row[0]=='text':
+        row = cur.fetchone()
+        if row and row[0] == 'text':
             cur.execute("UPDATE users SET xp='0' WHERE xp IS NULL OR xp='' OR xp !~ '^[0-9]+$'")
             cur.execute("ALTER TABLE users ALTER COLUMN xp TYPE INTEGER USING (CASE WHEN xp IS NULL OR xp='' THEN 0 ELSE xp::int END)")
         conn.commit()
     except Exception: conn.rollback()
+    # Создаём владельца автоматически (пароль НЕ перезаписываем)
     try:
-        cur.execute("SELECT password FROM users WHERE user_id=%s",(str(OWNER_ID),))
+        cur.execute("SELECT user_id FROM users WHERE login=%s", (OWNER_LOGIN,))
         if not cur.fetchone():
-            cur.execute("INSERT INTO users(user_id,name,password,telegram_id,messages_today,last_reset,is_owner,theme,joined_at) VALUES(%s,%s,%s,%s,0,%s,1,'dark',%s)",
-                        (str(OWNER_ID),'AWESOME',hash_pw('qawsedrf2346'),str(OWNER_ID),gm().strftime('%Y-%m-%d'),now_iso()))
-            cur.execute("INSERT INTO total_stats_web(user_id,total_messages) VALUES(%s,0) ON CONFLICT DO NOTHING",(str(OWNER_ID),))
+            cur.execute("INSERT INTO users(user_id,login,name,password,messages_today,last_reset,is_admin,is_owner,theme,joined_at) VALUES(%s,%s,%s,%s,0,%s,1,1,'dark',%s)",
+                        (OWNER_LOGIN, OWNER_LOGIN, OWNER_NAME, hash_pw(OWNER_PASSWORD), gm().strftime('%Y-%m-%d'), now_iso()))
+            cur.execute("INSERT INTO total_stats_web(user_id,total_messages) VALUES(%s,0) ON CONFLICT DO NOTHING", (OWNER_LOGIN,))
         conn.commit()
     except Exception: conn.rollback()
     cur.close(); conn.close()
+
 init_db()
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if HAS_SUPABASE else None
 
-# ===== ВХОД ЧЕРЕЗ TELEGRAM =====
-def tg_verify(data):
-    """Проверка подписи виджета Telegram Login."""
+# ============ АККАУНТЫ (имя + логин + пароль) ============
+def is_owner(login=None):
+    return bool(login and str(login).lower() == OWNER_LOGIN.lower())
+
+def reg_user(login, name, pw):
+    login = (login or "").strip()
+    name  = (name or "").strip()
+    if not login or len(login) < 3:  return False, "Логин мин. 3 символа"
+    if not name:                      return False, "Имя обязательно"
+    if not pw or len(pw) < 3:         return False, "Пароль мин. 3 символа"
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT user_id FROM users WHERE login=%s", (login,))
+    if cur.fetchone(): cur.close(); conn.close(); return False, "Этот логин уже занят"
+    ref_code = hashlib.md5((login + str(random.random())).encode()).hexdigest()[:8]
+    owner = 1 if is_owner(login) else 0
+    cur.execute("INSERT INTO users(user_id,login,name,password,messages_today,last_reset,is_admin,is_owner,theme,joined_at,ref_code) VALUES(%s,%s,%s,%s,0,%s,%s,%s,'dark',%s,%s)",
+                (login, login, name, hash_pw(pw), gm().strftime('%Y-%m-%d'), owner, owner, now_iso(), ref_code))
+    cur.execute("INSERT INTO total_stats_web(user_id,total_messages) VALUES(%s,0) ON CONFLICT DO NOTHING", (login,))
+    conn.commit(); cur.close(); conn.close()
+    return True, "OK"
+
+def login_user(login, pw):
+    login = (login or "").strip()
+    if not login: return False, "Введи логин"
+    conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM users WHERE login=%s", (login,))
+    row = cur.fetchone(); cur.close(); conn.close()
+    if not row: return False, "Аккаунт не найден. Зарегистрируйся"
+    if row['password'] != hash_pw(pw): return False, "Неверный пароль"
+    return True, "OK"
+
+def get_user(uid):
+    conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM users WHERE user_id=%s", (str(uid),))
+    row = cur.fetchone(); cur.close(); conn.close()
+    return dict(row) if row else None
+
+def get_user_by_login(login):
+    conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM users WHERE login=%s", (str(login),))
+    row = cur.fetchone(); cur.close(); conn.close()
+    return dict(row) if row else None
+
+def eff_status(uid):
+    u = get_user(uid) or {}
+    owner = 1 if is_owner(u.get('login')) else int(u.get('is_owner', 0))
+    is_admin = 1 if owner else int(u.get('is_admin', 0))
+    premium = int(u.get('premium', 0))
+    expires = u.get('premium_expires')
+    if premium == 1 and expires:
+        try:
+            if gm() > datetime.strptime(str(expires)[:19], '%Y-%m-%d %H:%M:%S').replace(tzinfo=MOSCOW_TZ):
+                premium = 0; expires = None
+        except Exception: pass
+    return {'premium': 1 if owner or premium else 0, 'premium_expires': expires,
+            'is_admin': is_admin, 'is_owner': owner,
+            'level': int(u.get('level', 1) or 1), 'xp': int(u.get('xp', 0) or 0), 'ref_count': u.get('ref_count', 0)}
+
+def can_send(uid):
+    s = eff_status(uid)
+    if s['is_owner'] or s['is_admin'] or s['premium']: return True
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT messages_today FROM users WHERE user_id=%s", (str(uid),))
+    row = cur.fetchone(); cur.close(); conn.close()
+    return (row[0] if row else 0) < FREE_LIMIT
+
+def incr(uid):
+    s = eff_status(uid)
+    if s['is_owner'] or s['is_admin']:
+        try: add_xp(uid, 5)
+        except Exception: pass
+        return
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("UPDATE users SET messages_today=messages_today+1 WHERE user_id=%s", (str(uid),))
+    cur.execute("INSERT INTO total_stats_web(user_id,total_messages) VALUES(%s,1) ON CONFLICT(user_id) DO UPDATE SET total_messages=total_stats_web.total_messages+1", (str(uid),))
+    conn.commit(); cur.close(); conn.close()
+    try: add_xp(uid, 10)
+    except Exception: pass
+
+def add_xp(uid, amt):
     try:
-        secret=hashlib.sha256(TELEGRAM_TOKEN.encode()).digest()
-        check=data.get('hash','')
-        items=sorted((k,v) for k,v in data.items() if k!='hash')
-        msg="\n".join(f"{k}={v}" for k,v in items)
-        calc=hmac.new(secret,msg.encode(),hashlib.sha256).hexdigest()
-        return hmac.compare_digest(calc,check) and int(data.get('auth_date',0))>time.time()-86400
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("UPDATE users SET xp=(CASE WHEN xp IS NULL THEN 0 ELSE xp END)+%s WHERE user_id=%s", (int(amt), str(uid)))
+        cur.execute("UPDATE users SET level=1+floor((CASE WHEN xp IS NULL THEN 0 ELSE xp END)/100) WHERE user_id=%s", (str(uid),))
+        conn.commit(); cur.close(); conn.close()
     except Exception:
-        return False
+        try:
+            conn = get_db(); cur = conn.cursor()
+            cur.execute("UPDATE users SET xp=(CASE WHEN xp IS NULL OR xp='' THEN 0 ELSE xp::int END)+%s WHERE user_id=%s", (int(amt), str(uid)))
+            cur.execute("UPDATE users SET level=1+floor((CASE WHEN xp IS NULL OR xp='' THEN 0 ELSE xp::int END)/100) WHERE user_id=%s", (str(uid),))
+            conn.commit(); cur.close(); conn.close()
+        except Exception: pass
 
-@app.route('/tg_oauth')
-def tg_oauth():
-    d=request.args.to_dict()
-    if not tg_verify(d):
-        return "<html><body style='background:#0a0f1c;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh'>❌ Ошибка входа. Попробуй ещё раз.</body></html>"
-    tg=str(d.get('id','')).strip()
-    first=d.get('first_name','') or ''
-    last=d.get('last_name','') or ''
-    name=(first+' '+last).strip() or 'Telegram'
-    u=get_user(tg)
-    if not u:
-        pw='tg_'+''.join(random.choice('abcdef0123456789') for _ in range(8))
-        ok,_=reg_user(tg,name,pw)
-        if not ok and not get_user(tg):
-            return "<html><body style='background:#0a0f1c;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh'>Не удалось создать аккаунт</body></html>"
-    session.permanent=True; session['user_id']=tg; session['name']=name
-    return """<html><head><script>
-    if(window.opener){window.opener.postMessage('tg_ok','*');window.close();}
-    else{location.href='/';}
-    </script></head><body style='background:#0a0f1c;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh'>✅ Вход выполнен!</body></html>"""
+def upd_settings(uid, **kw):
+    conn = get_db(); cur = conn.cursor()
+    for k, v in kw.items():
+        if v is not None: cur.execute(f"UPDATE users SET {k}=%s WHERE user_id=%s", (v, str(uid)))
+    conn.commit(); cur.close(); conn.close()
 
-# ===== ПАМЯТЬ О ПОЛЬЗОВАТЕЛЕ =====
+def log_admin(admin_id, action):
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("INSERT INTO admin_log(admin_id,action,created_at) VALUES(%s,%s,%s)", (str(admin_id), action, now_iso()))
+    conn.commit(); cur.close(); conn.close()
+
+def notify(uid, text):
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("INSERT INTO notifications(user_id,text,created_at) VALUES(%s,%s,%s)", (str(uid), text, now_iso()))
+    conn.commit(); cur.close(); conn.close()
+
+# ============ ПАМЯТЬ О ПОЛЬЗОВАТЕЛЕ ============
 def get_memory(uid, limit=30):
     try:
-        conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute("SELECT fact FROM user_memory WHERE user_id=%s ORDER BY id DESC LIMIT %s",(str(uid),limit))
-        rows=cur.fetchall(); cur.close(); conn.close()
+        conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT fact FROM user_memory WHERE user_id=%s ORDER BY id DESC LIMIT %s", (str(uid), limit))
+        rows = cur.fetchall(); cur.close(); conn.close()
         return [r['fact'] for r in rows]
     except Exception: return []
 
 def remember(uid, fact):
-    fact=(fact or '').strip()[:500]
-    if not fact or len(fact)<4: return
+    fact = (fact or '').strip()[:500]
+    if not fact or len(fact) < 4: return
     try:
-        conn=get_db(); cur=conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM user_memory WHERE user_id=%s AND fact=%s",(str(uid),fact))
-        if cur.fetchone()[0]==0:
-            cur.execute("INSERT INTO user_memory(user_id,fact,created_at) VALUES(%s,%s,%s)",(str(uid),fact,now_iso()))
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM user_memory WHERE user_id=%s AND fact=%s", (str(uid), fact))
+        if cur.fetchone()[0] == 0:
+            cur.execute("INSERT INTO user_memory(user_id,fact,created_at) VALUES(%s,%s,%s)", (str(uid), fact, now_iso()))
         conn.commit(); cur.close(); conn.close()
     except Exception: pass
 
-def extract_facts(uid,text):
-    facts=[]
-    tl=text.lower()
+def extract_facts(uid, text):
+    facts = []
+    tl = text.lower()
     if "меня зовут" in tl or "мое имя" in tl:
-        m=re.search(r'(?:меня зовут|мое имя)[:\s]+([А-Яа-яЁёA-Za-z\-]+)',tl)
-        if m: facts.append("Имя пользователя: "+m.group(1))
-    for kw,label in [("мне ", "Возраст: "), ("я живу в ", "Город: "), ("я работаю ", "Работа: "), ("учусь в ", "Учёба: "), ("я из ", "Город: ")]:
+        m = re.search(r'(?:меня зовут|мое имя)[:\s]+([А-Яа-яЁёA-Za-z\-]+)', tl)
+        if m: facts.append("Имя пользователя: " + m.group(1))
+    for kw, label in [("мне ", "Возраст: "), ("я живу в ", "Город: "), ("я работаю ", "Работа: "), ("учусь в ", "Учёба: "), ("я из ", "Город: ")]:
         if kw in tl:
-            m=re.search(re.escape(kw)+r'([^,.!?\n]{2,60})',tl)
-            if m: facts.append(label+m.group(1).strip())
-    if any(x in tl for x in ["мне нравится","я люблю","обожаю"]):
-        m=re.search(r'(?:мне нравится|я люблю|обожаю)\s+([^,.!?\n]{2,60})',tl)
-        if m: facts.append("Интерес/хобби: "+m.group(1).strip())
-    for f in facts: remember(uid,f)
+            m = re.search(re.escape(kw) + r'([^,.!?\n]{2,60})', tl)
+            if m: facts.append(label + m.group(1).strip())
+    if any(x in tl for x in ["мне нравится", "я люблю", "обожаю"]):
+        m = re.search(r'(?:мне нравится|я люблю|обожаю)\s+([^,.!?\n]{2,60})', tl)
+        if m: facts.append("Интерес/хобби: " + m.group(1).strip())
+    for f in facts: remember(uid, f)
     return facts
 
-# ===== ИНТЕРНЕТ-ПОИСК =====
+# ============ ИНТЕРНЕТ-ПОИСК ============
 def _search_ddg(query, num=6):
     try:
-        r=requests.get("https://html.duckduckgo.com/html/", params={"q":query},
-            headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, timeout=8, verify=False)
-        if r.status_code!=200: return []
-        out=[]
+        r = requests.get("https://html.duckduckgo.com/html/", params={"q": query},
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, timeout=8, verify=False)
+        if r.status_code != 200: return []
+        out = []
         for m in re.finditer(r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', r.text):
-            url=m.group(1); title=re.sub(r'<[^>]+>','',m.group(2))
+            url = m.group(1); title = re.sub(r'<[^>]+>', '', m.group(2))
             if url.startswith('//duckduckgo.com/l/?uddg='):
-                url=urllib.parse.unquote(url.split('uddg=')[1].split('&')[0])
-            sn=re.search(r'class="result__snippet"[^>]*>(.*?)</a>', r.text)
-            snippet=re.sub(r'<[^>]+>','',sn.group(1)) if sn else ''
+                url = urllib.parse.unquote(url.split('uddg=')[1].split('&')[0])
+            sn = re.search(r'class="result__snippet"[^>]*>(.*?)</a>', r.text)
+            snippet = re.sub(r'<[^>]+>', '', sn.group(1)) if sn else ''
             out.append((title.strip(), url, snippet.strip()))
-            if len(out)>=num: break
+            if len(out) >= num: break
         return out
     except Exception: return []
 
 def _search_bing(query, num=5):
     try:
-        r=requests.get("https://www.bing.com/search", params={"q":query},
-            headers={"User-Agent":"Mozilla/5.0"}, timeout=8, verify=False)
-        if r.status_code!=200: return []
-        out=[]
+        r = requests.get("https://www.bing.com/search", params={"q": query},
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=8, verify=False)
+        if r.status_code != 200: return []
+        out = []
         for m in re.finditer(r'<h2><a href="([^"]+)"[^>]*>(.*?)</a></h2>', r.text):
-            out.append((re.sub(r'<[^>]+>','',m.group(2)).strip(), m.group(1), ''))
-            if len(out)>=num: break
+            out.append((re.sub(r'<[^>]+>', '', m.group(2)).strip(), m.group(1), ''))
+            if len(out) >= num: break
         return out
     except Exception: return []
 
 def web_search(query, num=6):
-    qkey=hashlib.md5((query.lower()+'|'+gdate()).encode()).hexdigest()
+    qkey = hashlib.md5((query.lower() + '|' + gdate()).encode()).hexdigest()
     try:
-        conn=get_db(); cur=conn.cursor()
-        cur.execute("SELECT result FROM web_cache WHERE query=%s",(qkey,))
-        row=cur.fetchone(); cur.close(); conn.close()
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT result FROM web_cache WHERE query=%s", (qkey,))
+        row = cur.fetchone(); cur.close(); conn.close()
         if row: return json.loads(row[0])
     except Exception: pass
-    results=_search_ddg(query,num) or _search_bing(query,num)
+    results = _search_ddg(query, num) or _search_bing(query, num)
     if results:
         try:
-            conn=get_db(); cur=conn.cursor()
+            conn = get_db(); cur = conn.cursor()
             cur.execute("INSERT INTO web_cache(query,result,ts) VALUES(%s,%s,%s) ON CONFLICT(query) DO UPDATE SET result=%s,ts=%s",
-                (qkey,json.dumps(results),now_iso(),json.dumps(results),now_iso()))
+                (qkey, json.dumps(results), now_iso(), json.dumps(results), now_iso()))
             conn.commit(); cur.close(); conn.close()
         except Exception: pass
     return results or None
 
-# ===== СИНХРОНИЗАЦИЯ =====
-def bot_status(tg):
-    if not tg or not supabase: return None
-    try:
-        r=supabase.table('users').select('premium,premium_expires,is_admin,is_owner').eq('user_id',int(tg)).execute()
-        if r.data:
-            d=r.data[0]
-            if d.get('premium')==1 and d.get('premium_expires'):
-                try:
-                    if gm()>datetime.strptime(str(d['premium_expires'])[:19],'%Y-%m-%d %H:%M:%S').replace(tzinfo=MOSCOW_TZ):
-                        return {'premium':0,'premium_expires':None,'is_admin':d.get('is_admin',0),'is_owner':d.get('is_owner',0)}
-                except: return d
-            return d
-    except: pass
-    return None
-
-def eff_status(uid, tg=None):
-    conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM users WHERE user_id=%s",(str(uid),))
-    row=cur.fetchone(); cur.close(); conn.close()
-    u=dict(row) if row else {}
-    tg = tg or u.get('telegram_id') or str(uid)
-    bot=bot_status(tg)
-    premium = int(bot.get('premium',0)) if bot else int(u.get('premium',0))
-    expires = (bot.get('premium_expires') if bot and bot.get('premium') else u.get('premium_expires')) if premium else u.get('premium_expires')
-    is_admin = int(bot.get('is_admin',0)) if bot else int(u.get('is_admin',0))
-    owner = 1 if is_owner(uid,tg) else (int(bot.get('is_owner',0)) if bot else int(u.get('is_owner',0)))
-    if premium==1 and expires:
-        try:
-            if gm()>datetime.strptime(str(expires)[:19],'%Y-%m-%d %H:%M:%S').replace(tzinfo=MOSCOW_TZ):
-                premium=0; expires=None
-        except: pass
-    return {'premium':1 if owner or premium else 0,'premium_expires':expires,
-            'is_admin':1 if owner or is_admin else 0,'is_owner':owner,'telegram_id':tg,
-            'level':int(u.get('level',1) or 1),'xp':int(u.get('xp',0) or 0),'ref_count':u.get('ref_count',0)}
-
-# ===== АККАУНТЫ =====
-def reg_user(tg,name,pw):
-    if not tg or not tg.isdigit(): return False,"Telegram-ID обязателен"
-    if not name: return False,"Имя обязательно"
-    if not pw or len(pw)<3: return False,"Пароль мин. 3 символа"
-    conn=get_db(); cur=conn.cursor()
-    cur.execute("SELECT user_id FROM users WHERE user_id=%s",(str(tg),))
-    if cur.fetchone(): cur.close(); conn.close(); return False,"Этот Telegram-ID уже зарегистрирован"
-    ref_code=hashlib.md5((str(tg)+str(random.random())).encode()).hexdigest()[:8]
-    owner=1 if str(tg)==str(OWNER_ID) else 0
-    cur.execute("INSERT INTO users(user_id,name,password,telegram_id,messages_today,last_reset,is_admin,is_owner,theme,joined_at,ref_code) VALUES(%s,%s,%s,%s,0,%s,%s,%s,'dark',%s,%s)",
-                (str(tg),name,hash_pw(pw),str(tg),gm().strftime('%Y-%m-%d'),owner,owner,now_iso(),ref_code))
-    cur.execute("INSERT INTO total_stats_web(user_id,total_messages) VALUES(%s,0) ON CONFLICT DO NOTHING",(str(tg),))
-    conn.commit(); cur.close(); conn.close()
-    return True,"OK"
-
-def login_user(tg,pw):
-    if not tg: return False,"Введи Telegram-ID"
-    conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM users WHERE user_id=%s",(str(tg),))
-    row=cur.fetchone(); cur.close(); conn.close()
-    if not row: return False,"Аккаунт не найден. Зарегистрируйся"
-    if row['password']!=hash_pw(pw): return False,"Неверный пароль"
-    return True,"OK"
-
-def get_user(uid):
-    conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM users WHERE user_id=%s",(str(uid),))
-    row=cur.fetchone(); cur.close(); conn.close()
-    return dict(row) if row else None
-
-def can_send(uid,tg=None):
-    s=eff_status(uid,tg)
-    if s['is_owner'] or s['is_admin'] or s['premium']: return True
-    conn=get_db(); cur=conn.cursor()
-    cur.execute("SELECT messages_today FROM users WHERE user_id=%s",(str(uid),))
-    row=cur.fetchone(); cur.close(); conn.close()
-    return (row[0] if row else 0)<FREE_LIMIT
-
-def incr(uid,tg=None):
-    s=eff_status(uid,tg)
-    if s['is_owner'] or s['is_admin']:
-        try: add_xp(uid,5)
-        except Exception: pass
-        return
-    conn=get_db(); cur=conn.cursor()
-    cur.execute("UPDATE users SET messages_today=messages_today+1 WHERE user_id=%s",(str(uid),))
-    cur.execute("INSERT INTO total_stats_web(user_id,total_messages) VALUES(%s,1) ON CONFLICT(user_id) DO UPDATE SET total_messages=total_stats_web.total_messages+1",(str(uid),))
-    conn.commit(); cur.close(); conn.close()
-    try: add_xp(uid,10)
-    except Exception: pass
-
-def add_xp(uid,amt):
-    try:
-        conn=get_db(); cur=conn.cursor()
-        cur.execute("UPDATE users SET xp=(CASE WHEN xp IS NULL THEN 0 ELSE xp END)+%s WHERE user_id=%s",(int(amt),str(uid)))
-        cur.execute("UPDATE users SET level=1+floor((CASE WHEN xp IS NULL THEN 0 ELSE xp END)/100) WHERE user_id=%s",(str(uid),))
-        conn.commit(); cur.close(); conn.close()
-    except Exception:
-        try:
-            conn=get_db(); cur=conn.cursor()
-            cur.execute("UPDATE users SET xp=(CASE WHEN xp IS NULL OR xp='' THEN 0 ELSE xp::int END)+%s WHERE user_id=%s",(int(amt),str(uid)))
-            cur.execute("UPDATE users SET level=1+floor((CASE WHEN xp IS NULL OR xp='' THEN 0 ELSE xp::int END)/100) WHERE user_id=%s",(str(uid),))
-            conn.commit(); cur.close(); conn.close()
-        except Exception: pass
-
-def upd_settings(uid,**kw):
-    conn=get_db(); cur=conn.cursor()
-    for k,v in kw.items():
-        if v is not None: cur.execute(f"UPDATE users SET {k}=%s WHERE user_id=%s",(v,str(uid)))
-    conn.commit(); cur.close(); conn.close()
-
-def log_admin(admin_id,action):
-    conn=get_db(); cur=conn.cursor()
-    cur.execute("INSERT INTO admin_log(admin_id,action,created_at) VALUES(%s,%s,%s)",(str(admin_id),action,now_iso()))
-    conn.commit(); cur.close(); conn.close()
-
-def notify(uid,text):
-    conn=get_db(); cur=conn.cursor()
-    cur.execute("INSERT INTO notifications(user_id,text,created_at) VALUES(%s,%s,%s)",(str(uid),text,now_iso()))
-    conn.commit(); cur.close(); conn.close()
-
-# ===== ЧАТЫ =====
-def create_chat(uid,title="Новый чат"):
-    conn=get_db(); cur=conn.cursor()
-    cur.execute("INSERT INTO chats_web(user_id,title,created_at) VALUES(%s,%s,%s) RETURNING id",(str(uid),title,now_iso()))
-    cid=cur.fetchone()[0]; conn.commit(); cur.close(); conn.close(); return cid
+# ============ ЧАТЫ ============
+def create_chat(uid, title="Новый чат"):
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("INSERT INTO chats_web(user_id,title,created_at) VALUES(%s,%s,%s) RETURNING id", (str(uid), title, now_iso()))
+    cid = cur.fetchone()[0]; conn.commit(); cur.close(); conn.close(); return cid
 def get_chats(uid):
-    conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM chats_web WHERE user_id=%s ORDER BY pinned DESC,created_at DESC",(str(uid),))
-    rows=cur.fetchall(); cur.close(); conn.close(); return [dict(r) for r in rows]
-def add_msg(cid,role,content,image=None):
-    conn=get_db(); cur=conn.cursor()
-    cur.execute("INSERT INTO messages_web(chat_id,role,content,image,created_at) VALUES(%s,%s,%s,%s,%s)",(int(cid),role,content,image,now_iso()))
+    conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM chats_web WHERE user_id=%s ORDER BY pinned DESC,created_at DESC", (str(uid),))
+    rows = cur.fetchall(); cur.close(); conn.close(); return [dict(r) for r in rows]
+def add_msg(cid, role, content, image=None):
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("INSERT INTO messages_web(chat_id,role,content,image,created_at) VALUES(%s,%s,%s,%s,%s)", (int(cid), role, content, image, now_iso()))
     conn.commit(); cur.close(); conn.close()
 def get_msgs(cid):
-    conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM messages_web WHERE chat_id=%s ORDER BY id",(int(cid),))
-    rows=cur.fetchall(); cur.close(); conn.close(); return [dict(r) for r in rows]
+    conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM messages_web WHERE chat_id=%s ORDER BY id", (int(cid),))
+    rows = cur.fetchall(); cur.close(); conn.close(); return [dict(r) for r in rows]
 def hist(cid):
-    m=get_msgs(cid)
-    if len(m)<=MAX_HISTORY: return m if m else []
-    return m[:6]+m[-MAX_HISTORY+6:] if len(m)>6 else m
-def set_title(cid,t):
-    conn=get_db(); cur=conn.cursor()
-    cur.execute("UPDATE chats_web SET title=%s WHERE id=%s",(t[:50],int(cid)))
+    m = get_msgs(cid)
+    if len(m) <= MAX_HISTORY: return m if m else []
+    return m[:6] + m[-MAX_HISTORY+6:] if len(m) > 6 else m
+def set_title(cid, t):
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("UPDATE chats_web SET title=%s WHERE id=%s", (t[:50], int(cid)))
     conn.commit(); cur.close(); conn.close()
-def del_chat(uid,cid):
-    conn=get_db(); cur=conn.cursor()
-    cur.execute("DELETE FROM messages_web WHERE chat_id=%s",(int(cid),))
-    cur.execute("DELETE FROM chats_web WHERE id=%s AND user_id=%s",(int(cid),str(uid)))
+def del_chat(uid, cid):
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM messages_web WHERE chat_id=%s", (int(cid),))
+    cur.execute("DELETE FROM chats_web WHERE id=%s AND user_id=%s", (int(cid), str(uid)))
     conn.commit(); cur.close(); conn.close()
 def pin_chat(cid):
-    conn=get_db(); cur=conn.cursor()
-    cur.execute("UPDATE chats_web SET pinned=CASE WHEN pinned=1 THEN 0 ELSE 1 END WHERE id=%s",(int(cid),))
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("UPDATE chats_web SET pinned=CASE WHEN pinned=1 THEN 0 ELSE 1 END WHERE id=%s", (int(cid),))
     conn.commit(); cur.close(); conn.close()
 
-# ===== НЕЙРОСЕТЬ =====
-tok=None; tok_t=0
+# ============ НЕЙРОСЕТЬ ============
+tok = None; tok_t = 0
 def get_tok():
-    global tok,tok_t
-    if tok and time.time()-tok_t<180: return tok
+    global tok, tok_t
+    if tok and time.time() - tok_t < 180: return tok
     for _ in range(3):
         try:
-            r=requests.post("https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
-                headers={"Content-Type":"application/x-www-form-urlencoded","Accept":"application/json",
-                         "RqUID":str(_uuid.uuid4()),"Authorization":"Basic "+GIGACHAT_AUTH_KEY},
-                data="scope=GIGACHAT_API_PERS",timeout=10,verify=False)
-            if r.status_code==200:
-                j=r.json()
-                if j.get("access_token"): tok=j["access_token"]; tok_t=time.time(); return tok
+            r = requests.post("https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+                headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json",
+                         "RqUID": str(_uuid.uuid4()), "Authorization": "Basic " + GIGACHAT_AUTH_KEY},
+                data="scope=GIGACHAT_API_PERS", timeout=10, verify=False)
+            if r.status_code == 200:
+                j = r.json()
+                if j.get("access_token"): tok = j["access_token"]; tok_t = time.time(); return tok
         except Exception: pass
         time.sleep(0.7)
-    tok=None
+    tok = None
     return None
 
-def giga(hist,sysp,max_tok=2000):
+def giga(hist, sysp, max_tok=2000):
     try:
-        t=get_tok()
+        t = get_tok()
         if not t: return None
-        msgs=[{"role":"system","content":sysp[:3000]}]+[{"role":h.get("role","user"),"content":(h.get("content") or "")[:800]} for h in hist[-12:] if h.get("role") in("user","assistant")]
-        r=requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
-            headers={"Authorization":"Bearer "+t,"Content-Type":"application/json","Accept":"application/json"},
-            json={"model":"GigaChat-Pro","messages":msgs,"temperature":0.85,"max_tokens":max_tok},
-            timeout=GIGA_TIMEOUT,verify=False)
-        if r.status_code==200:
+        msgs = [{"role": "system", "content": sysp[:3000]}] + \
+               [{"role": h.get("role", "user"), "content": (h.get("content") or "")[:800]} for h in hist[-12:] if h.get("role") in ("user", "assistant")]
+        r = requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
+            headers={"Authorization": "Bearer " + t, "Content-Type": "application/json", "Accept": "application/json"},
+            json={"model": "GigaChat-Pro", "messages": msgs, "temperature": 0.85, "max_tokens": max_tok},
+            timeout=GIGA_TIMEOUT, verify=False)
+        if r.status_code == 200:
             try: return r.json()["choices"][0]["message"]["content"]
             except Exception: return None
     except Exception: pass
     return None
 
-def ygpt(text,sysp):
+def ygpt(text, sysp):
     try:
-        r=requests.post("https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
-            headers={"Authorization":"Api-Key "+YANDEX_API_KEY,"Content-Type":"application/json"},
-            json={"modelUri":"gpt://"+FOLDER_ID+"/yandexgpt/latest",
-                  "completionOptions":{"temperature":0.7,"maxTokens":700,"stream":False},
-                  "messages":[{"role":"system","text":sysp[:1500]},{"role":"user","text":text}]},
+        r = requests.post("https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
+            headers={"Authorization": "Api-Key " + YANDEX_API_KEY, "Content-Type": "application/json"},
+            json={"modelUri": "gpt://" + FOLDER_ID + "/yandexgpt/latest",
+                  "completionOptions": {"temperature": 0.7, "maxTokens": 700, "stream": False},
+                  "messages": [{"role": "system", "text": sysp[:1500]}, {"role": "user", "text": text}]},
             timeout=YGPT_TIMEOUT)
-        if r.status_code==200:
+        if r.status_code == 200:
             try: return r.json()["result"]["alternatives"][0]["message"]["text"]
             except Exception: return None
     except Exception: pass
     return None
 
-SUPER="""ТЫ — AWESOME AI, самый мощный живой ИИ-помощник нового поколения.
+SUPER = """ТЫ — AWESOME AI, самый мощный живой ИИ-помощник нового поколения.
 📍 Ты находишься в РОССИИ, городе МОСКВА. Сегодня: {d}, время: {t} (московское).
 {memory}
 ТВОЙ СТИЛЬ: отвечай как живой эксперт — живо, тепло, с юмором. Давай конкретику, цифры, примеры.
@@ -436,30 +387,28 @@ SUPER="""ТЫ — AWESOME AI, самый мощный живой ИИ-помощ
 ПРАВИЛА: если есть свежие данные из поиска ниже — ОБЯЗАТЕЛЬНО опирайся на них, дай ссылки. Никогда не выдумывай актуальные события, если их нет в поиске — так и скажи.
 Ты полноценный собеседник — поддерживай разговор, задавай встречные вопросы, запоминай детали.💎"""
 
-def smart_answer(uid,text,history,img=None,tg=None,doc=None):
-    mem=get_memory(uid)
-    sp=SUPER.format(d=gdate(),t=gm().strftime('%H:%M'),
-        memory=("Помнишь о пользователе:\n"+("\n".join("• "+f for f in mem))) if mem else "")
-    if eff_status(uid,tg)['premium']: sp+="\n💎 Пользователь Premium — дай максимум глубины."
-    if img: sp+=f"\n📸 Изображение: {img}"
-    if doc: sp+=f"\n📄 Документ: {doc[:3000]}"
-    tl=(text or "").lower().strip()
-    search_hits=None
-    needs_news=any(k in tl for k in ["новост","последн","сейчас","свеж","актуальн","сегодня","открылась","запусти","новый проект","что нового","расскажи про"]) \
-        or re.search(r'\b(20\d\d|вчера|сегодня)\b',tl)
+def smart_answer(uid, text, history, img=None, doc=None):
+    mem = get_memory(uid)
+    sp = SUPER.format(d=gdate(), t=gm().strftime('%H:%M'),
+        memory=("Помнишь о пользователе:\n" + ("\n".join("• " + f for f in mem))) if mem else "")
+    if eff_status(uid)['premium']: sp += "\n💎 Пользователь Premium — дай максимум глубины."
+    if img: sp += f"\n📸 Изображение: {img}"
+    if doc: sp += f"\n📄 Документ: {doc[:3000]}"
+    tl = (text or "").lower().strip()
+    needs_news = any(k in tl for k in ["новост","последн","сейчас","свеж","актуальн","сегодня","открылась","запусти","новый проект","что нового","расскажи про"]) \
+        or re.search(r'\b(20\d\d|вчера|сегодня)\b', tl)
     if needs_news:
-        res=web_search(text)
+        res = web_search(text)
         if res:
-            search_hits="\n".join(f"- {t}: {u}" for t,u,*_ in res[:5])
-            sp+="\n📰 АКТУАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА (только это считай правдой про недавние события):\n"+search_hits
-    try: extract_facts(uid,text)
+            sp += "\n📰 АКТУАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА (только это считай правдой про недавние события):\n" + "\n".join(f"- {t}: {u}" for t, u, *_ in res[:5])
+    try: extract_facts(uid, text)
     except Exception: pass
-    full=history+[{"role":"user","content":text or "Опиши"}]
-    a=giga(full,sp)
-    if a and len(a)>4: return a
-    b=ygpt(text,sp)
-    if b and len(b)>4: return b
-    # ---- МНОЖЕСТВО ПОЛЕЗНЫХ ФУНКЦИЙ (фолбэки) ----
+    full = history + [{"role": "user", "content": text or "Опиши"}]
+    a = giga(full, sp)
+    if a and len(a) > 4: return a
+    b = ygpt(text, sp)
+    if b and len(b) > 4: return b
+    # ---- фолбэки / 40+ функций ----
     if img: return f"📸 {img}"
     if any(w in tl for w in ["привет","здравств","хай","ку"]): return "👋 Привет! Рад тебя видеть. Чем займёмся сегодня?"
     if "время" in tl and ("сейчас" in tl or "сколько" in tl or "московск" in tl or "час" in tl):
@@ -467,25 +416,25 @@ def smart_answer(uid,text,history,img=None,tg=None,doc=None):
     if "дата" in tl or "какое сегодня число" in tl:
         return f"📅 Сегодня **{gdate()}**, {['понедельник','вторник','среда','четверг','пятница','суббота','воскресенье'][gm().weekday()]}."
     if "переведи" in tl or "перевод" in tl:
-        target='ru'
-        if "англ" in tl: target='en'
-        elif "немец" in tl: target='de'
-        elif "франц" in tl: target='fr'
-        txt=re.sub(r'(переведи|на английский|на русский|на немецкий|на французский|пожалуйста|на .*?)','',tl,flags=re.I).strip()
-        return "🌍 "+translate(txt[:500],target) if txt else "Напиши что перевести."
+        target = 'ru'
+        if "англ" in tl: target = 'en'
+        elif "немец" in tl: target = 'de'
+        elif "франц" in tl: target = 'fr'
+        txt = re.sub(r'(переведи|на английский|на русский|на немецкий|на французский|пожалуйста|на .*?)', '', tl, flags=re.I).strip()
+        return "🌍 " + translate(txt[:500], target) if txt else "Напиши что перевести."
     if "анекдот" in tl or "шутк" in tl or "рассмеши" in tl:
-        jokes=["— Почему программист перепутал Хэллоуин и Рождество? — Потому что Oct 31 == Dec 25 😄","— Админ заходит в бар, а там все буферы переполнены 😅","— Что сказал один сервер другому? — Ты сегодня в сети? 📶"]
-        return "😂 "+random.choice(jokes)
+        jokes = ["— Почему программист перепутал Хэллоуин и Рождество? — Потому что Oct 31 == Dec 25 😄","— Админ заходит в бар, а там все буферы переполнены 😅","— Что сказал один сервер другому? — Ты сегодня в сети? 📶"]
+        return "😂 " + random.choice(jokes)
     if "комплимент" in tl or "похвали" in tl or "что во мне хорош" in tl:
         return "✨ Ты потрясающий! У тебя отличный вкус (ты же выбрал AWESOME AI 😉), ты любопытный и явно умный собеседник. Таких людей приятно встречать!"
-    if "план" in tl or "распиши" in tl and "по шагам" in tl:
-        return "📋 **Пошаговый план** (я подготовлю его после того, как дашь больше деталей).\n\n1. Сформулируй цель 🎯\n2. Разбей на задачи 🔨\n3. Выдели сроки ⏰\n4. Действуй! 🚀\n\nНапиши тему — и я сделаю подробный план по ней."
+    if "план" in tl or "распиши" in tl:
+        return "📋 **Пошаговый план**\n\n1. Сформулируй цель 🎯\n2. Разбей на задачи 🔨\n3. Выдели сроки ⏰\n4. Действуй! 🚀\n\nНапиши тему — и я сделаю подробный план по ней."
     if "режим" in tl or "стань" in tl or "ты теперь" in tl:
         return "⚡ **Доступные режимы** — просто скажи:\n• «Будь моим юристом» ⚖️\n• «Будь моим психологом» 🧠\n• «Будь моим учителем» 📚\n• «Будь моим кодером» 💻\n• «Будь моим маркетологом» 📈\n• «Расскажи сказку» 🧚\n\nВыбери роль — и я отвечу в ней!"
     if any(k in tl for k in ['биткоин','btc','крипта','эфир']):
-        c=crypto(); return c if c else "🪙 Не удалось получить цену."
+        c = crypto(); return c if c else "🪙 Не удалось получить цену."
     if any(k in tl for k in ['курс','доллар','евро','валют']):
-        c=currency(); return c if c else "💵 Не удалось получить курс."
+        c = currency(); return c if c else "💵 Не удалось получить курс."
     if "рецепт" in tl or "приготов" in tl:
         return "🍳 Подскажи что хочешь приготовить (например: «рецепт омлета»), и я дам подробный рецепт с ингредиентами и шагами!"
     if "фильм" in tl and ("посоветуй" in tl or "подбери" in tl or "рекоменд" in tl):
@@ -493,513 +442,478 @@ def smart_answer(uid,text,history,img=None,tg=None,doc=None):
     if "книг" in tl and ("посоветуй" in tl or "подбери" in tl or "рекоменд" in tl):
         return "📚 Напиши любимый жанр — и я посоветую книги, которые точно тебе зайдут!"
     if "выучи" in tl or "запомни" in tl:
-        fact=re.sub(r'(запомни|выучи|что)\s*','',tl).strip()[:500]
-        if len(fact)>3:
+        fact = re.sub(r'(запомни|выучи|что)\s*', '', tl).strip()[:500]
+        if len(fact) > 3:
             remember(uid, fact)
-            return "🧠 Запомнил: «"+fact+"». Расскажу при случае!"
+            return "🧠 Запомнил: «" + fact + "». Расскажу при случае!"
         return "🧠 Что именно запомнить?"
     if "что ты помнишь" in tl or "память" in tl:
-        mem=get_memory(uid)
-        return "🧠 **Что я помню о тебе:**\n"+("\n".join("• "+f for f in mem) if mem else "Пока ничего. Скажи «запомни...», и я сохраню!")
+        mem = get_memory(uid)
+        return "🧠 **Что я помню о тебе:**\n" + ("\n".join("• " + f for f in mem) if mem else "Пока ничего. Скажи «запомни...», и я сохраню!")
     if "кто ты" in tl or "что ты умеешь" in tl:
         return "Я **AWESOME AI** — самый мощный живой помощник ✨\n\nУмею:\n**1. Общаться** 🗣\n**2. Искать в интернете** 🌐\n**3. Помнить о тебе** 🧠\n**4. Отвечать на свежие новости** 📰\n**5. Считать** 🧮\n**6. Рисовать** 🎨\n**7. Погода/валюты/крипта** 🌤💵🪙\n**8. Переводить** 🌍\n**9. Шутить** 😂\n**10. Давать планы** 📋\n\nЧто попробуем?"
-    if re.search(r'\d+\s*[\+\-\*\/]\s*\d+',tl):
+    if re.search(r'\d+\s*[\+\-\*\/]\s*\d+', tl):
         try:
-            res=eval(re.sub(r'[^0-9+\-*/(). ]','',tl)); return f"🧮 Результат: **{res}**"
+            res = eval(re.sub(r'[^0-9+\-*/(). ]', '', tl)); return f"🧮 Результат: **{res}**"
         except: return "🧮 Не понял выражение. Например: 2+2*3"
     if "погода" in tl:
-        m=re.search(r'(в|в городе)\s+([а-яА-Яa-zA-Z\- ]+)',tl)
+        m = re.search(r'(в|в городе)\s+([а-яА-Яa-zA-Z\- ]+)', tl)
         if m:
-            w=weather(m.group(2).strip()); return w if w else "🌤 Напиши: погода в [город]"
+            w = weather(m.group(2).strip()); return w if w else "🌤 Напиши: погода в [город]"
         return "🌤 Напиши: погода в [город]"
     return "🤖 Обрабатываю... Напиши чуть подробнее, и я дам полный ответ!"
 
 def describe_img(b64):
     try:
-        t=get_tok()
+        t = get_tok()
         if not t: return "📸 Изображение"
-        r=requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
-            headers={"Authorization":"Bearer "+t,"Content-Type":"application/json","Accept":"application/json"},
-            json={"model":"GigaChat-Pro","messages":[{"role":"system","content":"Опиши изображение подробно на русском, живо."},
-                {"role":"user","content":[{"type":"text","text":"Что на изображении?"},{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,"+b64}}]}],"temperature":0.5,"max_tokens":400},timeout=GIGA_TIMEOUT,verify=False)
-        if r.status_code==200: return r.json()["choices"][0]["message"]["content"]
-    except: pass
+        r = requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
+            headers={"Authorization": "Bearer " + t, "Content-Type": "application/json", "Accept": "application/json"},
+            json={"model": "GigaChat-Pro", "messages": [{"role": "system", "content": "Опиши изображение подробно на русском, живо."},
+                {"role": "user", "content": [{"type": "text", "text": "Что на изображении?"}, {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + b64}}]}], "temperature": 0.5, "max_tokens": 400}, timeout=GIGA_TIMEOUT, verify=False)
+        if r.status_code == 200: return r.json()["choices"][0]["message"]["content"]
+    except Exception: pass
     return "📸 Изображение"
 
 def gen_img(prompt):
     try:
-        c=prompt
-        for w in ['нарисуй','сгенерируй','покажи','картинку','изображение','нарисуй мне']: c=c.replace(w,'').strip()
-        if not c: c=prompt
-        r=requests.get(f"https://image.pollinations.ai/prompt/{urllib.parse.quote(c)}?width=1024&height=1024&nologo=true",headers={"User-Agent":"Mozilla/5.0"},timeout=25)
-        if r.status_code==200 and len(r.content)>1000: return base64.b64encode(r.content).decode()
-    except: pass
+        c = prompt
+        for w in ['нарисуй','сгенерируй','покажи','картинку','изображение','нарисуй мне']: c = c.replace(w, '').strip()
+        if not c: c = prompt
+        r = requests.get(f"https://image.pollinations.ai/prompt/{urllib.parse.quote(c)}?width=1024&height=1024&nologo=true", headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
+        if r.status_code == 200 and len(r.content) > 1000: return base64.b64encode(r.content).decode()
+    except Exception: pass
     return None
 
-def translate(text,target='ru'):
+def translate(text, target='ru'):
     try:
-        r=requests.post("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl="+target+"&dt=t&q="+urllib.parse.quote(text[:5000]),timeout=8)
-        if r.status_code==200: return "".join(x[0] for x in r.json()[0] if x[0])
-    except: pass
+        r = requests.post("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=" + target + "&dt=t&q=" + urllib.parse.quote(text[:5000]), timeout=8)
+        if r.status_code == 200: return "".join(x[0] for x in r.json()[0] if x[0])
+    except Exception: pass
     return text
 
 def weather(city):
     try:
-        r=requests.get(f"https://api.openweathermap.org/data/2.5/weather?q={urllib.parse.quote(city)}&appid=4c8f5c0b8a9f2c5d6e7f8g9h0i1j2k3l&units=metric&lang=ru",timeout=SEARCH_TIMEOUT)
-        if r.status_code==200:
-            d=r.json(); return f"🌤 **{city}**: {round(d['main']['temp'])}°C, {d['weather'][0]['description']}\n💨 Ветер: {d['wind']['speed']} м/с\n💧 Влажность: {d['main']['humidity']}%"
-    except: pass
+        r = requests.get(f"https://api.openweathermap.org/data/2.5/weather?q={urllib.parse.quote(city)}&appid=4c8f5c0b8a9f2c5d6e7f8g9h0i1j2k3l&units=metric&lang=ru", timeout=SEARCH_TIMEOUT)
+        if r.status_code == 200:
+            d = r.json(); return f"🌤 **{city}**: {round(d['main']['temp'])}°C, {d['weather'][0]['description']}\n💨 Ветер: {d['wind']['speed']} м/с\n💧 Влажность: {d['main']['humidity']}%"
+    except Exception: pass
     return None
 
 def currency():
     try:
-        r=requests.get("https://api.exchangerate-api.com/v4/latest/USD",timeout=SEARCH_TIMEOUT)
-        rates=r.json().get('rates',{}); usd=rates.get('RUB','?'); eur=usd/rates.get('EUR',1) if rates.get('EUR') else '?'
+        r = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=SEARCH_TIMEOUT)
+        rates = r.json().get('rates', {}); usd = rates.get('RUB', '?'); eur = usd / rates.get('EUR', 1) if rates.get('EUR') else '?'
         return f"💵 **Курс валют:**\nUSD: **{round(usd,2)}₽**\nEUR: **{round(eur,2)}₽**"
-    except: return None
+    except Exception: return None
 
 def crypto():
     try:
-        r=requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd",timeout=SEARCH_TIMEOUT)
-        d=r.json(); return f"🪙 **Криптовалюта:**\nBTC: **${d.get('bitcoin',{}).get('usd','?')}**\nETH: **${d.get('ethereum',{}).get('usd','?')}**"
-    except: return None
+        r = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd", timeout=SEARCH_TIMEOUT)
+        d = r.json(); return f"🪙 **Криптовалюта:**\nBTC: **${d.get('bitcoin',{}).get('usd','?')}**\nETH: **${d.get('ethereum',{}).get('usd','?')}**"
+    except Exception: return None
 
 def read_pdf(b64):
     try:
         import fitz
-        raw=base64.b64decode(b64.split(',')[-1]); doc=fitz.open(stream=raw,filetype="pdf")
+        raw = base64.b64decode(b64.split(',')[-1]); doc = fitz.open(stream=raw, filetype="pdf")
         return "".join(page.get_text() for page in doc)[:5000] or "PDF без текста"
-    except: return "PDF загружен"
+    except Exception: return "PDF загружен"
 
-# ===== API =====
+# ============ API ============
 @app.route('/')
 def index(): return render_template_string(INDEX_HTML)
 
-@app.route('/api/register',methods=['POST'])
+@app.route('/api/register', methods=['POST'])
 def api_register():
-    d=request.json; tg=str(d.get('telegram_id','')).strip(); name=str(d.get('name','')).strip(); pw=str(d.get('password',''))
-    ok,msg=reg_user(tg,name,pw)
-    if not ok: return jsonify({'ok':False,'error':msg})
-    session.permanent=True; session['user_id']=tg; session['name']=name
-    return jsonify({'ok':True,'user_id':tg,'name':name})
+    d = request.json
+    login = str(d.get('login', '')).strip(); name = str(d.get('name', '')).strip(); pw = str(d.get('password', ''))
+    ok, msg = reg_user(login, name, pw)
+    if not ok: return jsonify({'ok': False, 'error': msg})
+    session.permanent = True; session['user_id'] = login; session['name'] = name
+    return jsonify({'ok': True, 'user_id': login, 'name': name})
 
-@app.route('/api/login',methods=['POST'])
+@app.route('/api/login', methods=['POST'])
 def api_login():
-    d=request.json; tg=str(d.get('telegram_id','')).strip(); pw=str(d.get('password',''))
-    ok,msg=login_user(tg,pw)
-    if not ok: return jsonify({'ok':False,'error':msg})
-    u=get_user(tg); session.permanent=True; session['user_id']=tg; session['name']=u.get('name') if u else tg
-    st=eff_status(tg,tg)
-    if u and st['is_owner']:
-        try:
-            conn=get_db(); c=conn.cursor()
-            c.execute("UPDATE users SET is_owner=1 WHERE user_id=%s",(str(tg),)); conn.commit(); c.close(); conn.close()
-        except: pass
-    return jsonify({'ok':True,'user_id':tg,'name':session['name']})
+    d = request.json
+    login = str(d.get('login', '')).strip(); pw = str(d.get('password', ''))
+    ok, msg = login_user(login, pw)
+    if not ok: return jsonify({'ok': False, 'error': msg})
+    u = get_user_by_login(login)
+    session.permanent = True; session['user_id'] = login; session['name'] = u.get('name') if u else login
+    return jsonify({'ok': True, 'user_id': login, 'name': session['name']})
 
-@app.route('/api/logout',methods=['POST'])
-def api_logout(): session.clear(); return jsonify({'ok':True})
+@app.route('/api/logout', methods=['POST'])
+def api_logout(): session.clear(); return jsonify({'ok': True})
 
 @app.route('/api/me')
 def api_me():
-    uid=session.get('user_id')
-    if not uid: return jsonify({'ok':False})
-    u=get_user(uid)
-    if not u: session.clear(); return jsonify({'ok':False})
-    return jsonify({'ok':True,'user_id':uid,'name':session.get('name') or u.get('name'),'theme':u.get('theme','dark')})
+    uid = session.get('user_id')
+    if not uid: return jsonify({'ok': False})
+    u = get_user(uid)
+    if not u: session.clear(); return jsonify({'ok': False})
+    return jsonify({'ok': True, 'user_id': uid, 'name': session.get('name') or u.get('name'), 'theme': u.get('theme', 'dark')})
 
 @app.route('/api/status')
 def api_status():
-    uid=session.get('user_id')
-    if not uid: return jsonify({'ok':False})
-    u=get_user(uid); tg=u.get('telegram_id') if u else uid
-    s=eff_status(uid,tg)
-    conn=get_db(); cur=conn.cursor()
-    cur.execute("SELECT messages_today FROM users WHERE user_id=%s",(str(uid),)); row=cur.fetchone(); cur.close(); conn.close()
-    if s['is_owner']: st="👑 Владелец"; lim="♾️"
-    elif s['is_admin']: st="👑 Админ"; lim="♾️"
-    elif s['premium']: st="💎 Premium"; lim="♾️"
-    else: st="🔓 Бесплатный"; lim=f"{max(0,FREE_LIMIT-(row[0] if row else 0))}/{FREE_LIMIT}"
-    return jsonify({'ok':True,'premium':bool(s['premium']),'is_admin':bool(s['is_admin']),'is_owner':bool(s['is_owner']),
-                    'premium_expires':fmt_date(s['premium_expires']) if s['premium'] else None,
-                    'status_text':st,'limit_text':lim,'messages_today':row[0] if row else 0,'free_limit':FREE_LIMIT,
-                    'level':s['level'],'xp':s['xp'],'tg_bot':TG_BOT})
+    uid = session.get('user_id')
+    if not uid: return jsonify({'ok': False})
+    s = eff_status(uid)
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT messages_today FROM users WHERE user_id=%s", (str(uid),)); row = cur.fetchone(); cur.close(); conn.close()
+    if s['is_owner']: st = "👑 Владелец"; lim = "♾️"
+    elif s['is_admin']: st = "🛡 Админ"; lim = "♾️"
+    elif s['premium']: st = "💎 Premium"; lim = "♾️"
+    else: st = "🔓 Бесплатный"; lim = f"{max(0, FREE_LIMIT-(row[0] if row else 0))}/{FREE_LIMIT}"
+    return jsonify({'ok': True, 'premium': bool(s['premium']), 'is_admin': bool(s['is_admin']), 'is_owner': bool(s['is_owner']),
+                    'premium_expires': fmt_date(s['premium_expires']) if s['premium'] else None,
+                    'status_text': st, 'limit_text': lim, 'messages_today': row[0] if row else 0, 'free_limit': FREE_LIMIT,
+                    'level': s['level'], 'xp': s['xp']})
 
-@app.route('/api/chat',methods=['POST'])
+@app.route('/api/chat', methods=['POST'])
 def api_chat():
-    uid=session.get('user_id')
-    if not uid: return jsonify({'ok':False,'error':'Авторизуйся'})
-    u=get_user(uid); tg=u.get('telegram_id') if u else uid
-    if not can_send(uid,tg): return jsonify({'ok':False,'error':'Лимит! Купи Premium в ТГ-боте '+TG_BOT})
-    d=request.json; msg=d.get('message','').strip(); cid=d.get('chat_id'); img=d.get('image'); doc=d.get('document')
-    if not msg and not img and not doc: return jsonify({'ok':False,'error':'Пустое'})
-    if not cid: cid=create_chat(uid)
-    h=hist(cid)
-    idesc=None; dtext=None
+    uid = session.get('user_id')
+    if not uid: return jsonify({'ok': False, 'error': 'Авторизуйся'})
+    if not can_send(uid): return jsonify({'ok': False, 'error': 'Лимит! Повысь тариф в админке.'})
+    d = request.json; msg = d.get('message', '').strip(); cid = d.get('chat_id'); img = d.get('image'); doc = d.get('document')
+    if not msg and not img and not doc: return jsonify({'ok': False, 'error': 'Пустое'})
+    if not cid: cid = create_chat(uid)
+    h = hist(cid)
+    idesc = None; dtext = None
     if img:
         try:
-            raw=base64.b64decode(img.split(',')[-1])
+            raw = base64.b64decode(img.split(',')[-1])
             if HAS_PIL:
-                im=Image.open(io.BytesIO(raw)).convert('RGB'); im.thumbnail((700,700))
-                b=io.BytesIO(); im.save(b,'JPEG',quality=80); idesc=describe_img(base64.b64encode(b.getvalue()).decode())
-            else: idesc=describe_img(img.split(',')[-1])
-        except: idesc="📸"
+                im = Image.open(io.BytesIO(raw)).convert('RGB'); im.thumbnail((700, 700))
+                b = io.BytesIO(); im.save(b, 'JPEG', quality=80); idesc = describe_img(base64.b64encode(b.getvalue()).decode())
+            else: idesc = describe_img(img.split(',')[-1])
+        except Exception: idesc = "📸"
     if doc:
-        if doc.get('type')=='pdf': dtext=read_pdf(doc.get('data',''))
-        else: dtext="Документ: "+doc.get('name','')
-    add_msg(cid,'user',msg,img)
-    response=smart_answer(uid,msg,h,idesc,tg,dtext)
-    try: incr(uid,tg)
+        if doc.get('type') == 'pdf': dtext = read_pdf(doc.get('data', ''))
+        else: dtext = "Документ: " + doc.get('name', '')
+    add_msg(cid, 'user', msg, img)
+    response = smart_answer(uid, msg, h, idesc, dtext)
+    try: incr(uid)
     except Exception: pass
-    add_msg(cid,'assistant',response)
+    add_msg(cid, 'assistant', response)
     try:
-        ms=get_msgs(cid); fu=next((m for m in ms if m['role']=='user' and m['content']),None)
-        if fu: set_title(cid,fu['content'][:40])
-    except: pass
-    return jsonify({'ok':True,'response':response,'chat_id':cid})
+        ms = get_msgs(cid); fu = next((m for m in ms if m['role'] == 'user' and m['content']), None)
+        if fu: set_title(cid, fu['content'][:40])
+    except Exception: pass
+    return jsonify({'ok': True, 'response': response, 'chat_id': cid})
 
 @app.route('/api/chats')
 def api_chats():
-    uid=session.get('user_id')
-    if not uid: return jsonify({'ok':False})
-    chats=get_chats(uid)
-    for c in chats: c['messages']=get_msgs(c['id'])
-    return jsonify({'ok':True,'chats':chats})
+    uid = session.get('user_id')
+    if not uid: return jsonify({'ok': False})
+    chats = get_chats(uid)
+    for c in chats: c['messages'] = get_msgs(c['id'])
+    return jsonify({'ok': True, 'chats': chats})
 
-@app.route('/api/chat/new',methods=['POST'])
+@app.route('/api/chat/new', methods=['POST'])
 def api_chat_new():
-    uid=session.get('user_id')
-    if not uid: return jsonify({'ok':False})
-    return jsonify({'ok':True,'chat_id':create_chat(uid)})
+    uid = session.get('user_id')
+    if not uid: return jsonify({'ok': False})
+    return jsonify({'ok': True, 'chat_id': create_chat(uid)})
 
-@app.route('/api/chat/delete',methods=['POST'])
+@app.route('/api/chat/delete', methods=['POST'])
 def api_chat_delete():
-    uid=session.get('user_id')
-    if not uid: return jsonify({'ok':False})
-    del_chat(uid,request.json.get('chat_id')); return jsonify({'ok':True})
+    uid = session.get('user_id')
+    if not uid: return jsonify({'ok': False})
+    del_chat(uid, request.json.get('chat_id')); return jsonify({'ok': True})
 
-@app.route('/api/chat/pin',methods=['POST'])
+@app.route('/api/chat/pin', methods=['POST'])
 def api_chat_pin():
-    uid=session.get('user_id')
-    if not uid: return jsonify({'ok':False})
-    pin_chat(request.json.get('chat_id')); return jsonify({'ok':True})
+    uid = session.get('user_id')
+    if not uid: return jsonify({'ok': False})
+    pin_chat(request.json.get('chat_id')); return jsonify({'ok': True})
 
-@app.route('/api/chat/rename',methods=['POST'])
+@app.route('/api/chat/rename', methods=['POST'])
 def api_chat_rename():
-    uid=session.get('user_id')
-    if not uid: return jsonify({'ok':False})
-    d=request.json; set_title(d.get('chat_id'),d.get('title','Чат')); return jsonify({'ok':True})
+    uid = session.get('user_id')
+    if not uid: return jsonify({'ok': False})
+    d = request.json; set_title(d.get('chat_id'), d.get('title', 'Чат')); return jsonify({'ok': True})
 
-@app.route('/api/search',methods=['POST'])
+@app.route('/api/search', methods=['POST'])
 def api_search():
-    uid=session.get('user_id')
-    if not uid: return jsonify({'ok':False})
-    q=request.json.get('q','').lower(); chats=get_chats(uid); res=[]
+    uid = session.get('user_id')
+    if not uid: return jsonify({'ok': False})
+    q = request.json.get('q', '').lower(); chats = get_chats(uid); res = []
     for c in chats:
         for m in c['messages']:
-            if q in str(m.get('content','')).lower():
-                res.append({'chat_id':c['id'],'title':c['title'],'snippet':str(m.get('content',''))[:80]}); break
-    return jsonify({'ok':True,'results':res})
+            if q in str(m.get('content', '')).lower():
+                res.append({'chat_id': c['id'], 'title': c['title'], 'snippet': str(m.get('content', ''))[:80]}); break
+    return jsonify({'ok': True, 'results': res})
 
-@app.route('/api/share',methods=['POST'])
+@app.route('/api/share', methods=['POST'])
 def api_share():
-    uid=session.get('user_id')
-    if not uid: return jsonify({'ok':False})
-    cid=request.json.get('chat_id'); sid=hashlib.md5((str(cid)+now_iso()).encode()).hexdigest()[:10]
-    conn=get_db(); cur=conn.cursor()
-    cur.execute("INSERT INTO shared_chats(id,chat_id,created_at) VALUES(%s,%s,%s)",(sid,int(cid),now_iso()))
+    uid = session.get('user_id')
+    if not uid: return jsonify({'ok': False})
+    cid = request.json.get('chat_id'); sid = hashlib.md5((str(cid) + now_iso()).encode()).hexdigest()[:10]
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("INSERT INTO shared_chats(id,chat_id,created_at) VALUES(%s,%s,%s)", (sid, int(cid), now_iso()))
     conn.commit(); cur.close(); conn.close()
-    return jsonify({'ok':True,'share_id':sid})
+    return jsonify({'ok': True, 'share_id': sid})
 
 @app.route('/shared/<sid>')
 def shared(sid):
-    conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT chat_id FROM shared_chats WHERE id=%s",(sid,))
-    row=cur.fetchone(); cur.close(); conn.close()
-    if not row: return "Чат не найден",404
-    msgs=get_msgs(row['chat_id'])
+    conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT chat_id FROM shared_chats WHERE id=%s", (sid,))
+    row = cur.fetchone(); cur.close(); conn.close()
+    if not row: return "Чат не найден", 404
+    msgs = get_msgs(row['chat_id'])
     return render_template_string("""<html><head><title>Общий чат</title></head><body style="background:#0f1420;color:#e8eaf6;font-family:Segoe UI;padding:20px;max-width:760px;margin:auto"><h2>💬 Общий чат</h2>{{h|safe}}</body></html>""",
-        h="".join(f'<div class="m" style="background:#171d2b;border-radius:12px;padding:12px;margin:10px 0;white-space:pre-wrap">{"Вы" if m["role"]=="user" else "🤖 AWESOME AI"}:<br>'+html.escape(m.get("content") or "")+"</div>" for m in msgs))
+        h="".join(f'<div class="m" style="background:#171d2b;border-radius:12px;padding:12px;margin:10px 0;white-space:pre-wrap">{"Вы" if m["role"]=="user" else "🤖 AWESOME AI"}:<br>' + html.escape(m.get("content") or "") + "</div>" for m in msgs))
 
-@app.route('/api/export',methods=['POST'])
+@app.route('/api/export', methods=['POST'])
 def api_export():
-    uid=session.get('user_id')
-    if not uid: return jsonify({'ok':False})
-    msgs=get_msgs(request.json.get('chat_id'))
-    txt="".join(("Вы: " if m['role']=='user' else "AWESOME AI: ")+str(m.get('content') or "")+"\n\n" for m in msgs)
-    f=io.BytesIO(txt.encode('utf-8'))
-    return send_file(f,as_attachment=True,download_name="chat.txt",mimetype="text/plain")
+    uid = session.get('user_id')
+    if not uid: return jsonify({'ok': False})
+    msgs = get_msgs(request.json.get('chat_id'))
+    txt = "".join(("Вы: " if m['role'] == 'user' else "AWESOME AI: ") + str(m.get('content') or "") + "\n\n" for m in msgs)
+    f = io.BytesIO(txt.encode('utf-8'))
+    return send_file(f, as_attachment=True, download_name="chat.txt", mimetype="text/plain")
 
-@app.route('/api/translate',methods=['POST'])
+@app.route('/api/translate', methods=['POST'])
 def api_translate():
-    d=request.json; return jsonify({'ok':True,'translated':translate(d.get('text',''),d.get('target','ru'))})
+    d = request.json; return jsonify({'ok': True, 'translated': translate(d.get('text', ''), d.get('target', 'ru'))})
 
-@app.route('/api/draw',methods=['POST'])
+@app.route('/api/draw', methods=['POST'])
 def api_draw():
-    uid=session.get('user_id')
-    if not uid: return jsonify({'ok':False,'error':'Авторизуйся'})
-    u=get_user(uid); tg=u.get('telegram_id') if u else uid
-    if not can_send(uid,tg): return jsonify({'ok':False,'error':'Лимит! Купи Premium в ТГ-боте '+TG_BOT})
-    img=gen_img(request.json.get('prompt',''))
-    if img: incr(uid,tg); return jsonify({'ok':True,'image':img})
-    return jsonify({'ok':False,'error':'Не удалось'})
+    uid = session.get('user_id')
+    if not uid: return jsonify({'ok': False, 'error': 'Авторизуйся'})
+    if not can_send(uid): return jsonify({'ok': False, 'error': 'Лимит!'})
+    img = gen_img(request.json.get('prompt', ''))
+    if img: incr(uid); return jsonify({'ok': True, 'image': img})
+    return jsonify({'ok': False, 'error': 'Не удалось'})
 
 @app.route('/api/profile')
 def api_profile():
-    uid=session.get('user_id')
-    if not uid: return jsonify({'ok':False})
-    u=get_user(uid); tg=u.get('telegram_id') if u else uid
-    s=eff_status(uid,tg)
-    conn=get_db(); cur=conn.cursor()
-    cur.execute("SELECT messages_today FROM users WHERE user_id=%s",(str(uid),)); row=cur.fetchone()
-    cur.execute("SELECT total_messages FROM total_stats_web WHERE user_id=%s",(str(uid),)); tot=cur.fetchone()
+    uid = session.get('user_id')
+    if not uid: return jsonify({'ok': False})
+    u = get_user(uid); s = eff_status(uid)
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT messages_today FROM users WHERE user_id=%s", (str(uid),)); row = cur.fetchone()
+    cur.execute("SELECT total_messages FROM total_stats_web WHERE user_id=%s", (str(uid),)); tot = cur.fetchone()
     cur.close(); conn.close()
-    return jsonify({'ok':True,'user_id':uid,'name':u.get('name'),'telegram_id':tg,'theme':u.get('theme','dark'),
-                    'avatar':u.get('avatar',''),'ref_code':u.get('ref_code'),'premium':bool(s['premium']),
-                    'is_admin':bool(s['is_admin']),'is_owner':bool(s['is_owner']),'level':s['level'],'xp':s['xp'],
-                    'premium_expires':fmt_date(s['premium_expires']) if s['premium'] else None,
-                    'messages_today':row[0] if row else 0,'total_messages':tot[0] if tot else 0,'joined_at':u.get('joined_at'),'tg_bot':TG_BOT})
+    return jsonify({'ok': True, 'user_id': uid, 'name': u.get('name'), 'login': u.get('login'), 'theme': u.get('theme', 'dark'),
+                    'avatar': u.get('avatar', ''), 'ref_code': u.get('ref_code'), 'premium': bool(s['premium']),
+                    'is_admin': bool(s['is_admin']), 'is_owner': bool(s['is_owner']), 'level': s['level'], 'xp': s['xp'],
+                    'premium_expires': fmt_date(s['premium_expires']) if s['premium'] else None,
+                    'messages_today': row[0] if row else 0, 'total_messages': tot[0] if tot else 0, 'joined_at': u.get('joined_at')})
 
-@app.route('/api/settings',methods=['POST'])
+@app.route('/api/settings', methods=['POST'])
 def api_settings():
-    uid=session.get('user_id')
-    if not uid: return jsonify({'ok':False})
-    d=request.json
-    upd_settings(uid,name=d.get('name'),theme=d.get('theme'),avatar=d.get('avatar'))
-    if d.get('name'): session['name']=d['name']
-    return jsonify({'ok':True})
+    uid = session.get('user_id')
+    if not uid: return jsonify({'ok': False})
+    d = request.json
+    upd_settings(uid, name=d.get('name'), theme=d.get('theme'), avatar=d.get('avatar'))
+    if d.get('name'): session['name'] = d['name']
+    return jsonify({'ok': True})
 
 @app.route('/api/notifications')
 def api_notifications():
-    uid=session.get('user_id')
-    if not uid: return jsonify({'ok':False})
-    conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM notifications WHERE user_id=%s ORDER BY id DESC LIMIT 20",(str(uid),))
-    rows=cur.fetchall(); cur.close(); conn.close()
-    return jsonify({'ok':True,'items':[dict(r) for r in rows]})
+    uid = session.get('user_id')
+    if not uid: return jsonify({'ok': False})
+    conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM notifications WHERE user_id=%s ORDER BY id DESC LIMIT 20", (str(uid),))
+    rows = cur.fetchall(); cur.close(); conn.close()
+    return jsonify({'ok': True, 'items': [dict(r) for r in rows]})
 
-# ===== АДМИНКА =====
+# ============ АДМИНКА ============
 def admin_check():
-    uid=session.get('user_id')
-    if not uid: return None,False,"Нет авторизации"
-    u=get_user(uid)
-    if not is_owner(uid,u.get('telegram_id') if u else None): return None,False,"Нет доступа"
-    return uid,True,""
+    uid = session.get('user_id')
+    if not uid: return None, False, "Нет авторизации"
+    if not is_owner(uid): return None, False, "Нет доступа"
+    return uid, True, ""
 
-UNITS={'s':'секунд','sec':'секунд','min':'минут','m':'минут','h':'часов','hour':'часов','d':'дней','day':'дней','w':'недель','week':'недель','mo':'месяцев','month':'месяцев','y':'лет','year':'лет'}
-def parse_duration(num,unit):
-    try: n=int(num)
-    except: return None
-    now=gm()
-    if unit in ('s','sec'): return (now+timedelta(seconds=n)).strftime('%Y-%m-%d %H:%M:%S')
-    if unit in ('min','m'): return (now+timedelta(minutes=n)).strftime('%Y-%m-%d %H:%M:%S')
-    if unit in ('h','hour'): return (now+timedelta(hours=n)).strftime('%Y-%m-%d %H:%M:%S')
-    if unit in ('d','day'): return (now+timedelta(days=n)).strftime('%Y-%m-%d %H:%M:%S')
-    if unit in ('w','week'): return (now+timedelta(weeks=n)).strftime('%Y-%m-%d %H:%M:%S')
-    if unit in ('mo','month'): return (now+relativedelta(months=n)).strftime('%Y-%m-%d %H:%M:%S')
-    if unit in ('y','year'): return (now+relativedelta(years=n)).strftime('%Y-%m-%d %H:%M:%S')
+UNITS = {'s':'секунд','sec':'секунд','min':'минут','m':'минут','h':'часов','hour':'часов','d':'дней','day':'дней','w':'недель','week':'недель','mo':'месяцев','month':'месяцев','y':'лет','year':'лет'}
+def parse_duration(num, unit):
+    try: n = int(num)
+    except Exception: return None
+    now = gm()
+    if unit in ('s','sec'): return (now + timedelta(seconds=n)).strftime('%Y-%m-%d %H:%M:%S')
+    if unit in ('min','m'): return (now + timedelta(minutes=n)).strftime('%Y-%m-%d %H:%M:%S')
+    if unit in ('h','hour'): return (now + timedelta(hours=n)).strftime('%Y-%m-%d %H:%M:%S')
+    if unit in ('d','day'): return (now + timedelta(days=n)).strftime('%Y-%m-%d %H:%M:%S')
+    if unit in ('w','week'): return (now + timedelta(weeks=n)).strftime('%Y-%m-%d %H:%M:%S')
+    if unit in ('mo','month'): return (now + relativedelta(months=n)).strftime('%Y-%m-%d %H:%M:%S')
+    if unit in ('y','year'): return (now + relativedelta(years=n)).strftime('%Y-%m-%d %H:%M:%S')
     return None
 
 @app.route('/api/admin/stats')
 def admin_stats():
-    uid,ok,err=admin_check()
-    if not ok: return jsonify({'ok':False,'error':err})
-    conn=get_db(); cur=conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM users"); total=cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM users WHERE premium=1"); prem=cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM users WHERE is_admin=1"); admins=cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM chats_web"); chats=cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM messages_web"); msgs=cur.fetchone()[0]
+    uid, ok, err = admin_check()
+    if not ok: return jsonify({'ok': False, 'error': err})
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM users"); total = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM users WHERE premium=1"); prem = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM users WHERE is_admin=1"); admins = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM chats_web"); chats = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM messages_web"); msgs = cur.fetchone()[0]
     cur.execute("SELECT user_id,name,premium,is_admin,premium_expires,level,xp FROM users ORDER BY joined_at DESC LIMIT 300")
-    users=cur.fetchall(); cur.close(); conn.close()
-    return jsonify({'ok':True,'total':total,'premium':prem,'admins':admins,'chats':chats,'messages':msgs,
-                    'users':[{'id':r[0],'name':r[1],'premium':r[2],'is_admin':r[3],'expires':r[4],'level':r[5],'xp':r[6]} for r in users]})
+    users = cur.fetchall(); cur.close(); conn.close()
+    return jsonify({'ok': True, 'total': total, 'premium': prem, 'admins': admins, 'chats': chats, 'messages': msgs,
+                    'users': [{'id': r[0], 'name': r[1], 'premium': r[2], 'is_admin': r[3], 'expires': r[4], 'level': r[5], 'xp': r[6]} for r in users]})
 
-@app.route('/api/admin/give',methods=['POST'])
+@app.route('/api/admin/give', methods=['POST'])
 def admin_give():
-    uid,ok,err=admin_check()
-    if not ok: return jsonify({'ok':False,'error':err})
-    d=request.json; target=str(d.get('user_id','')).strip(); action=d.get('action')
-    if not target: return jsonify({'ok':False,'error':'Укажи ID'})
-    conn=get_db(); cur=conn.cursor()
-    cur.execute("SELECT user_id FROM users WHERE user_id=%s",(target,))
-    if not cur.fetchone(): cur.close(); conn.close(); return jsonify({'ok':False,'error':'Пользователь не найден'})
-    if action=='give_prem':
-        exp=parse_duration(d.get('num',30),d.get('unit','d'))
-        if not exp: cur.close(); conn.close(); return jsonify({'ok':False,'error':'Неверный срок'})
-        cur.execute("UPDATE users SET premium=1, premium_expires=%s WHERE user_id=%s",(exp,target))
-        if supabase:
-            try: supabase.table('users').update({'premium':1,'premium_expires':exp}).eq('user_id',int(target)).execute()
-            except: pass
-    elif action=='take_prem':
-        cur.execute("UPDATE users SET premium=0, premium_expires=NULL WHERE user_id=%s",(target,))
-        if supabase:
-            try: supabase.table('users').update({'premium':0,'premium_expires':None}).eq('user_id',int(target)).execute()
-            except: pass
-    elif action=='give_admin':
-        cur.execute("UPDATE users SET is_admin=1 WHERE user_id=%s",(target,))
-        if supabase:
-            try: supabase.table('users').update({'is_admin':1}).eq('user_id',int(target)).execute()
-            except: pass
-    elif action=='take_admin':
-        cur.execute("UPDATE users SET is_admin=0 WHERE user_id=%s",(target,))
-        if supabase:
-            try: supabase.table('users').update({'is_admin':0}).eq('user_id',int(target)).execute()
-            except: pass
-    elif action=='delete_user':
-        cur.execute("DELETE FROM users WHERE user_id=%s",(target,))
-        cur.execute("DELETE FROM total_stats_web WHERE user_id=%s",(target,))
-    elif action=='reset_pass':
-        newpw=d.get('password','')
-        if len(newpw)<3: cur.close(); conn.close(); return jsonify({'ok':False,'error':'Пароль мин.3'})
-        cur.execute("UPDATE users SET password=%s WHERE user_id=%s",(hash_pw(newpw),target))
-    elif action=='set_xp':
-        cur.execute("UPDATE users SET xp=%s WHERE user_id=%s",(int(d.get('value',0)),target))
-        cur.execute("UPDATE users SET level=1+floor(xp/100) WHERE user_id=%s",(target,))
-    elif action=='set_theme':
-        cur.execute("UPDATE users SET theme=%s WHERE user_id=%s",(d.get('value','dark'),target))
+    uid, ok, err = admin_check()
+    if not ok: return jsonify({'ok': False, 'error': err})
+    d = request.json; target = str(d.get('user_id', '')).strip(); action = d.get('action')
+    if not target: return jsonify({'ok': False, 'error': 'Укажи ID'})
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT user_id FROM users WHERE user_id=%s", (target,))
+    if not cur.fetchone(): cur.close(); conn.close(); return jsonify({'ok': False, 'error': 'Пользователь не найден'})
+    if action == 'give_prem':
+        exp = parse_duration(d.get('num', 30), d.get('unit', 'd'))
+        if not exp: cur.close(); conn.close(); return jsonify({'ok': False, 'error': 'Неверный срок'})
+        cur.execute("UPDATE users SET premium=1, premium_expires=%s WHERE user_id=%s", (exp, target))
+    elif action == 'take_prem':
+        cur.execute("UPDATE users SET premium=0, premium_expires=NULL WHERE user_id=%s", (target,))
+    elif action == 'give_admin':
+        cur.execute("UPDATE users SET is_admin=1 WHERE user_id=%s", (target,))
+    elif action == 'take_admin':
+        cur.execute("UPDATE users SET is_admin=0 WHERE user_id=%s", (target,))
+    elif action == 'delete_user':
+        cur.execute("DELETE FROM users WHERE user_id=%s", (target,))
+        cur.execute("DELETE FROM total_stats_web WHERE user_id=%s", (target,))
+    elif action == 'reset_pass':
+        newpw = d.get('password', '')
+        if len(newpw) < 3: cur.close(); conn.close(); return jsonify({'ok': False, 'error': 'Пароль мин.3'})
+        cur.execute("UPDATE users SET password=%s WHERE user_id=%s", (hash_pw(newpw), target))
+    elif action == 'set_xp':
+        cur.execute("UPDATE users SET xp=%s WHERE user_id=%s", (int(d.get('value', 0)), target))
+        cur.execute("UPDATE users SET level=1+floor(xp/100) WHERE user_id=%s", (target,))
+    elif action == 'set_theme':
+        cur.execute("UPDATE users SET theme=%s WHERE user_id=%s", (d.get('value', 'dark'), target))
     conn.commit(); cur.close(); conn.close()
-    log_admin(uid,f"{action} {target}")
-    return jsonify({'ok':True})
-
-@app.route('/api/admin/broadcast',methods=['POST'])
-def admin_broadcast():
-    uid,ok,err=admin_check()
-    if not ok: return jsonify({'ok':False,'error':err})
-    text=request.json.get('text','')
-    conn=get_db(); cur=conn.cursor()
-    cur.execute("SELECT user_id FROM users"); ids=[r[0] for r in cur.fetchall()]; cur.close(); conn.close()
-    sent=0
-    for uid2 in ids:
-        try: requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",json={"chat_id":uid2,"text":text},timeout=5); sent+=1
-        except: pass
-    log_admin(uid,f"Рассылка {sent}/{len(ids)}")
-    return jsonify({'ok':True,'sent':sent,'total':len(ids)})
+    log_admin(uid, f"{action} {target}")
+    return jsonify({'ok': True})
 
 @app.route('/api/admin/logs')
 def admin_logs():
-    uid,ok,err=admin_check()
-    if not ok: return jsonify({'ok':False,'error':err})
-    conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    uid, ok, err = admin_check()
+    if not ok: return jsonify({'ok': False, 'error': err})
+    conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute("SELECT * FROM admin_log ORDER BY id DESC LIMIT 80")
-    rows=cur.fetchall(); cur.close(); conn.close()
-    return jsonify({'ok':True,'logs':[dict(r) for r in rows]})
+    rows = cur.fetchall(); cur.close(); conn.close()
+    return jsonify({'ok': True, 'logs': [dict(r) for r in rows]})
 
-@app.route('/api/admin/reset_db',methods=['POST'])
+@app.route('/api/admin/reset_db', methods=['POST'])
 def admin_reset_db():
-    uid,ok,err=admin_check()
-    if not ok: return jsonify({'ok':False,'error':err})
-    conn=get_db(); cur=conn.cursor()
+    uid, ok, err = admin_check()
+    if not ok: return jsonify({'ok': False, 'error': err})
+    conn = get_db(); cur = conn.cursor()
     cur.execute("DELETE FROM users"); cur.execute("DELETE FROM total_stats_web")
     conn.commit(); cur.close(); conn.close()
-    log_admin(uid,"Полная очистка аккаунтов")
-    return jsonify({'ok':True})
+    log_admin(uid, "Полная очистка аккаунтов")
+    return jsonify({'ok': True})
 
-# ===== HTML: PRO-интерфейс =====
-INDEX_HTML = r"""<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><title>AWESOME AI — PRO</title>
+# ============ HTML: ChatGPT-интерфейс (красивые анимации, всё сворачивается) ============
+INDEX_HTML = r"""<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><title>AWESOME AI</title>
 <style>
-:root{--bg:#0a0f1c;--bg2:#101827;--panel:#131c2e;--border:#223052;--accent:#6ea8ff;--accent2:#55e6c1;--text:#e9eefc;--muted:#93a0bd;--danger:#ff7b8a;--success:#5fd0a0;--glow:rgba(110,168,255,.20)}
-[data-theme="light"]{--bg:#eef2fb;--bg2:#fff;--panel:#fff;--border:#dfe6f3;--accent:#4a72f0;--accent2:#17b38f;--text:#20253a;--muted:#6c7794;--danger:#e05060;--success:#1e9e77}
-*{margin:0;padding:0;box-sizing:border-box;font-family:'Segoe UI',system-ui,sans-serif}
+:root{--bg:#0a0f1c;--bg2:#101827;--panel:#141d31;--border:#223052;--accent:#6ea8ff;--accent2:#55e6c1;--text:#e9eefc;--muted:#93a0bd;--danger:#ff7b8a;--success:#5fd0a0;--glow:rgba(110,168,255,.25)}
+[data-theme="light"]{--bg:#eef2fb;--bg2:#ffffff;--panel:#ffffff;--border:#dfe6f3;--accent:#4a72f0;--accent2:#17b38f;--text:#20253a;--muted:#6c7794;--danger:#e05060;--success:#1e9e77}
+*{margin:0;padding:0;box-sizing:border-box;font-family:'Inter','Segoe UI',system-ui,sans-serif}
 html,body{height:100%}
-body{background:var(--bg);color:var(--text);height:100vh;overflow:hidden;transition:background .25s;position:relative;-webkit-font-smoothing:antialiased}
-.bg-anim{position:fixed;inset:0;z-index:0;pointer-events:none;contain:strict;background:radial-gradient(circle at 25% 25%,rgba(110,168,255,.12),transparent 42%),radial-gradient(circle at 75% 75%,rgba(85,230,193,.12),transparent 42%),radial-gradient(circle at 50% 100%,rgba(124,77,255,.10),transparent 45%)}
+body{background:var(--bg);color:var(--text);height:100vh;overflow:hidden;transition:background .3s;-webkit-font-smoothing:antialiased}
+.bg-anim{position:fixed;inset:0;z-index:0;pointer-events:none;background:radial-gradient(circle at 20% 20%,rgba(110,168,255,.14),transparent 40%),radial-gradient(circle at 80% 30%,rgba(85,230,193,.13),transparent 40%),radial-gradient(circle at 50% 90%,rgba(124,77,255,.12),transparent 45%)}
 .particles{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
-.part{position:absolute;bottom:-10px;border-radius:50%;opacity:0;will-change:transform;animation:floatUp linear infinite}
-@keyframes floatUp{0%{transform:translateY(0) scale(.6);opacity:0}15%{opacity:.12}85%{opacity:.06}100%{transform:translateY(-108vh) scale(1.15);opacity:0}}
+.part{position:absolute;bottom:-10px;border-radius:50%;opacity:0;will-change:transform,opacity;animation:floatUp linear infinite}
+@keyframes floatUp{0%{transform:translateY(0) scale(.6);opacity:0}15%{opacity:.13}85%{opacity:.07}100%{transform:translateY(-108vh) scale(1.2);opacity:0}}
 .app{position:relative;z-index:1;display:flex;height:100vh}
-.sidebar{width:280px;background:linear-gradient(180deg,var(--bg2),var(--panel));border-right:1px solid var(--border);display:flex;flex-direction:column;transition:transform .28s ease;z-index:60;contain:layout paint}
+.sidebar{width:272px;background:linear-gradient(180deg,var(--bg2),var(--panel));border-right:1px solid var(--border);display:flex;flex-direction:column;transition:transform .3s cubic-bezier(.4,0,.2,1);z-index:60;box-shadow:2px 0 18px rgba(0,0,0,.18)}
 .sidebar.collapsed{transform:translateX(-100%)}
-.sidebar-header{height:56px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--border);flex-shrink:0}
-.logo{width:40px;height:40px;border-radius:13px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
+.sidebar-header{height:58px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--border);flex-shrink:0}
+.logo{width:40px;height:40px;border-radius:13px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:21px;flex-shrink:0;box-shadow:0 3px 12px var(--glow)}
 .brand{font-weight:800;font-size:16px;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;flex:1;white-space:nowrap;overflow:hidden}
-.side-toggle{background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;padding:6px;transition:transform .15s;flex-shrink:0}
-.side-toggle:hover{color:var(--accent);transform:scale(1.12)}
-.new-chat{margin:12px 14px;padding:12px;background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;border-radius:13px;color:#fff;font-weight:700;cursor:pointer;font-size:14px;transition:transform .12s,box-shadow .15s;flex-shrink:0}
-.new-chat:hover{box-shadow:0 4px 16px var(--glow)}
+.side-toggle,.mobile-toggle{background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;padding:6px;transition:transform .18s,color .18s;flex-shrink:0}
+.side-toggle:hover,.mobile-toggle:hover{color:var(--accent);transform:rotate(180deg) scale(1.12)}
+.new-chat{margin:13px 14px;padding:12px;background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;border-radius:13px;color:#fff;font-weight:700;cursor:pointer;font-size:14px;transition:transform .14s,box-shadow .2s;flex-shrink:0}
+.new-chat:hover{box-shadow:0 6px 20px var(--glow);transform:translateY(-1px)}
 .new-chat:active{transform:scale(.97)}
 .chat-list{flex:1;overflow-y:auto;padding:0 8px}
-.chat-item{padding:10px 11px;border-radius:11px;cursor:pointer;margin-bottom:3px;font-size:13px;display:flex;align-items:center;gap:8px;transition:background .15s}
-.chat-item:hover,.chat-item.active{background:var(--bg2)}
+.chat-item{padding:11px 12px;border-radius:11px;cursor:pointer;margin-bottom:3px;font-size:13px;display:flex;align-items:center;gap:8px;transition:background .18s,transform .12s}
+.chat-item:hover{background:var(--bg2)}
+.chat-item.active{background:var(--bg2);border:1px solid var(--border)}
 .chat-item .t{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.chat-item .del{opacity:0;background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;transition:opacity .12s}
+.chat-item .del{opacity:0;background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;transition:opacity .15s}
 .chat-item:hover .del{opacity:1}
-.sidebar-footer{padding:10px 12px;border-top:1px solid var(--border);flex-shrink:0}
-.user-box{display:flex;align-items:center;gap:9px;padding:9px;background:var(--bg2);border-radius:13px;border:1px solid var(--border)}
-.avatar{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;flex-shrink:0;color:#fff}
+.sidebar-footer{padding:11px 12px;border-top:1px solid var(--border);flex-shrink:0}
+.user-box{display:flex;align-items:center;gap:9px;padding:9px;background:var(--bg2);border:1px solid var(--border);border-radius:14px}
+.avatar{width:37px;height:37px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;flex-shrink:0;color:#fff}
 .user-info{flex:1;min-width:0}
 .user-name{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .user-status{font-size:11px;color:var(--accent)}
 .user-actions{display:flex;gap:2px}
-.mini-btn{background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:4px;transition:color .12s}
-.mini-btn:hover{color:var(--accent)}
+.mini-btn{background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:4px;transition:color .15s,transform .15s}
+.mini-btn:hover{color:var(--accent);transform:scale(1.15)}
 .main{flex:1;display:flex;flex-direction:column;min-width:0}
-.main-header{height:56px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--border);position:relative;background:rgba(16,24,39,.4);flex-shrink:0}
-.mobile-toggle{background:none;border:none;color:var(--text);font-size:22px;cursor:pointer;padding:6px;transition:transform .15s;flex-shrink:0;display:block}
-.mobile-toggle:hover{transform:scale(1.12)}
+.main-header{height:58px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--border);background:rgba(16,24,39,.45);flex-shrink:0}
 .main-header .title{flex:1;text-align:center;font-weight:600;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .header-spacer{width:30px}
-.messages{flex:1;overflow-y:auto;padding:18px;scroll-behavior:smooth;contain:content}
-.welcome{max-width:720px;margin:0 auto;text-align:center;padding-top:6vh;animation:up .4s ease}
-@keyframes up{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
-.welcome h1{font-size:clamp(26px,5vw,42px);margin-bottom:10px;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
-.welcome p{color:var(--muted);margin-bottom:24px;font-size:16px}
-.suggestion-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;max-width:640px;margin:0 auto}
-.sugg{background:linear-gradient(160deg,var(--panel),var(--bg2));border:1px solid var(--border);border-radius:15px;padding:14px;cursor:pointer;transition:transform .15s,border-color .15s;font-size:13px;text-align:left}
-.sugg:hover{transform:translateY(-3px);border-color:var(--accent)}
-.sugg:active{transform:scale(.96)}
-.sugg .ic{font-size:22px;margin-bottom:7px;display:block}
-.msg{max-width:760px;margin:0 auto 14px;display:flex;gap:11px;animation:up .25s ease;position:relative}
+.messages{flex:1;overflow-y:auto;padding:20px;scroll-behavior:smooth}
+.welcome{max-width:760px;margin:0 auto;text-align:center;padding-top:6vh;animation:fadeUp .5s ease}
+@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+.welcome h1{font-size:clamp(28px,5vw,44px);margin-bottom:10px;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.welcome p{color:var(--muted);margin-bottom:26px;font-size:16px}
+.suggestion-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:11px;max-width:660px;margin:0 auto}
+.sugg{background:linear-gradient(160deg,var(--panel),var(--bg2));border:1px solid var(--border);border-radius:16px;padding:15px;cursor:pointer;transition:transform .18s,border-color .18s,box-shadow .18s;font-size:13px;text-align:left}
+.sugg:hover{transform:translateY(-4px);border-color:var(--accent);box-shadow:0 8px 22px var(--glow)}
+.sugg:active{transform:scale(.95)}
+.sugg .ic{font-size:23px;margin-bottom:8px;display:block}
+.msg{max-width:780px;margin:0 auto 16px;display:flex;gap:11px;animation:fadeUp .3s ease;position:relative}
 .msg.user{flex-direction:row-reverse}
-.msg .bubble{padding:12px 16px;border-radius:17px;font-size:15px;line-height:1.55;max-width:82%;white-space:pre-wrap;word-break:break-word}
-.msg.user .bubble{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-top-right-radius:5px}
+.msg .bubble{padding:13px 17px;border-radius:18px;font-size:15px;line-height:1.55;max-width:84%;white-space:pre-wrap;word-break:break-word}
+.msg.user .bubble{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-top-right-radius:5px;box-shadow:0 4px 16px var(--glow)}
 .msg.ai .bubble{background:linear-gradient(160deg,var(--panel),var(--bg2));border:1px solid var(--border);border-top-left-radius:5px}
 .msg .bubble b{color:var(--accent)}
 .msg .bubble .h{display:block;font-weight:800;color:var(--accent);font-size:15px;margin:9px 0 4px;padding-top:7px;border-top:1px solid var(--border)}
 .msg .bubble .h:first-child{border:none;margin-top:0;padding-top:0}
 .msg .bubble img.a{max-width:220px;border-radius:11px;margin-top:8px;display:block}
 .msg .bubble img.g{max-width:100%;border-radius:11px;margin-top:8px}
-.msg-actions{position:absolute;top:7px;right:7px;display:flex;gap:3px;opacity:0;transition:opacity .12s}
+.msg-actions{position:absolute;top:7px;right:7px;display:flex;gap:3px;opacity:0;transition:opacity .18s}
 .msg:hover .msg-actions{opacity:1}
-.msg-actions button{background:var(--bg2);border:1px solid var(--border);color:var(--muted);border-radius:7px;cursor:pointer;font-size:12px;padding:3px 7px}
+.msg-actions button{background:var(--bg2);border:1px solid var(--border);color:var(--muted);border-radius:8px;cursor:pointer;font-size:12px;padding:3px 8px;transition:color .15s}
 .msg-actions button:hover{color:var(--accent)}
 .typing-dots{display:inline-flex;gap:5px;padding:8px 2px}
 .typing-dots span{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:bo 1.1s infinite}
 .typing-dots span:nth-child(2){animation-delay:.2s}.typing-dots span:nth-child(3){animation-delay:.4s}
 @keyframes bo{0%,100%{transform:translateY(0);opacity:.4}50%{transform:translateY(-6px);opacity:1}}
-.input-area{padding:12px;border-top:1px solid var(--border);background:var(--bg);flex-shrink:0}
-.attach-preview{max-width:760px;margin:0 auto 8px;display:none;gap:8px;align-items:center;background:var(--bg2);border:1px solid var(--border);border-radius:13px;padding:7px;animation:up .18s ease}
+.input-area{padding:13px;border-top:1px solid var(--border);background:var(--bg);flex-shrink:0}
+.attach-preview{max-width:780px;margin:0 auto 8px;display:none;gap:8px;align-items:center;background:var(--bg2);border:1px solid var(--border);border-radius:13px;padding:7px;animation:fadeUp .18s ease}
 .attach-preview img{width:48px;height:48px;object-fit:cover;border-radius:7px}
 .attach-preview .an{flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .attach-preview .rm{background:none;border:none;color:var(--danger);cursor:pointer;font-size:17px}
-.input-wrap{max-width:760px;margin:0 auto;display:flex;align-items:flex-end;gap:5px;background:var(--bg2);border:1px solid var(--border);border-radius:19px;padding:7px;transition:border-color .15s}
-.input-wrap:focus-within{border-color:var(--accent)}
+.input-wrap{max-width:780px;margin:0 auto;display:flex;align-items:flex-end;gap:5px;background:var(--bg2);border:1px solid var(--border);border-radius:20px;padding:7px;transition:border-color .2s,box-shadow .2s}
+.input-wrap:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--glow)}
 textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:15px;resize:none;max-height:130px;padding:7px 4px}
-.icon-btn{width:36px;height:36px;border-radius:11px;background:none;border:none;color:var(--muted);font-size:16px;cursor:pointer;flex-shrink:0;transition:color .12s}
-.icon-btn:hover{color:var(--accent)}
-.send-btn{width:42px;height:42px;border-radius:13px;background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;color:#fff;font-size:17px;cursor:pointer;flex-shrink:0;transition:transform .12s}
-.send-btn:hover{transform:scale(1.07)}
+.icon-btn{width:37px;height:37px;border-radius:12px;background:none;border:none;color:var(--muted);font-size:16px;cursor:pointer;flex-shrink:0;transition:color .15s,transform .15s}
+.icon-btn:hover{color:var(--accent);transform:scale(1.1)}
+.send-btn{width:43px;height:43px;border-radius:14px;background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;color:#fff;font-size:17px;cursor:pointer;flex-shrink:0;transition:transform .15s,box-shadow .2s}
+.send-btn:hover{transform:scale(1.08);box-shadow:0 4px 14px var(--glow)}
 .send-btn:disabled{opacity:.4;cursor:not-allowed;transform:none}
-.toolbar{max-width:760px;margin:9px auto 0;display:flex;gap:7px;flex-wrap:wrap}
-.tool-btn{background:var(--panel);border:1px solid var(--border);color:var(--muted);border-radius:9px;padding:6px 12px;font-size:12px;cursor:pointer;transition:color .12s,border-color .12s}
-.tool-btn:hover{color:var(--text);border-color:var(--accent)}
-.overlay{position:fixed;inset:0;background:rgba(8,12,24,.72);z-index:100;display:flex;align-items:center;justify-content:center;padding:16px;opacity:0;visibility:hidden;transition:opacity .22s,visibility .22s}
+.toolbar{max-width:780px;margin:10px auto 0;display:flex;gap:7px;flex-wrap:wrap;justify-content:center}
+.tool-btn{background:var(--panel);border:1px solid var(--border);color:var(--muted);border-radius:10px;padding:6px 13px;font-size:12px;cursor:pointer;transition:color .15s,border-color .15s,transform .15s}
+.tool-btn:hover{color:var(--text);border-color:var(--accent);transform:translateY(-1px)}
+.overlay{position:fixed;inset:0;background:rgba(8,12,24,.75);z-index:100;display:flex;align-items:center;justify-content:center;padding:16px;opacity:0;visibility:hidden;transition:opacity .25s,visibility .25s}
 .overlay.show{opacity:1;visibility:visible}
-.modal{background:linear-gradient(170deg,var(--panel),var(--bg2));border:1px solid var(--border);border-radius:21px;padding:26px;width:100%;max-width:430px;text-align:center;max-height:90vh;overflow-y:auto;transform:scale(.94) translateY(8px);opacity:0;transition:transform .25s,opacity .25s}
+.modal{background:linear-gradient(170deg,var(--panel),var(--bg2));border:1px solid var(--border);border-radius:22px;padding:28px;width:100%;max-width:430px;text-align:center;max-height:90vh;overflow-y:auto;transform:scale(.94) translateY(10px);opacity:0;transition:transform .28s cubic-bezier(.34,1.56,.64,1),opacity .25s}
 .overlay.show .modal{transform:scale(1) translateY(0);opacity:1}
-.modal.wide{max-width:680px}
-.modal .tabs{display:flex;gap:7px;margin-bottom:15px}
-.modal .tab{flex:1;padding:10px;border-radius:11px;background:var(--bg2);border:1px solid var(--border);color:var(--muted);cursor:pointer;font-weight:700;font-size:14px;transition:background .15s}
+.modal.wide{max-width:700px}
+.modal .tabs{display:flex;gap:7px;margin-bottom:16px}
+.modal .tab{flex:1;padding:10px;border-radius:11px;background:var(--bg2);border:1px solid var(--border);color:var(--muted);cursor:pointer;font-weight:700;font-size:14px;transition:background .18s,color .18s}
 .modal .tab.active{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border:none}
 .modal h2{margin-bottom:8px}.modal p{color:var(--muted);font-size:14px;margin-bottom:13px}
-.modal input,.modal select,.modal textarea{width:100%;padding:11px;background:var(--bg2);border:1px solid var(--border);border-radius:11px;color:var(--text);font-size:15px;margin-bottom:9px;outline:none;transition:border-color .15s}
+.modal input,.modal select,.modal textarea{width:100%;padding:11px;background:var(--bg2);border:1px solid var(--border);border-radius:11px;color:var(--text);font-size:15px;margin-bottom:9px;outline:none;transition:border-color .18s}
 .modal input:focus,.modal select:focus{border-color:var(--accent)}
-.modal .btn{width:100%;padding:12px;border:none;border-radius:11px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-weight:700;font-size:15px;cursor:pointer;margin-bottom:7px;transition:transform .12s}
-.modal .btn:hover{transform:translateY(-1px)}
+.modal .btn{width:100%;padding:12px;border:none;border-radius:11px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-weight:700;font-size:15px;cursor:pointer;margin-bottom:7px;transition:transform .14s,box-shadow .2s}
+.modal .btn:hover{transform:translateY(-1px);box-shadow:0 5px 16px var(--glow)}
 .modal .btn.ghost{background:var(--bg2);color:var(--muted);border:1px solid var(--border)}
 .modal .btn.danger{background:linear-gradient(135deg,var(--danger),#e05060)}
 .hint{font-size:12px;color:var(--muted);margin-top:10px;line-height:1.5}
-.toast{position:fixed;top:20px;right:20px;background:var(--panel);border:1px solid var(--border);border-radius:13px;padding:13px 18px;z-index:400;max-width:320px;transform:translateX(120%);transition:transform .25s}
+.toast{position:fixed;top:20px;right:20px;background:var(--panel);border:1px solid var(--border);border-radius:13px;padding:13px 18px;z-index:400;max-width:320px;transform:translateX(120%);transition:transform .3s cubic-bezier(.34,1.56,.64,1)}
 .toast.show{transform:translateX(0)}
 .toast.error{border-color:var(--danger)}.toast.success{border-color:var(--success)}
 .scrollbar::-webkit-scrollbar{width:6px}.scrollbar::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
@@ -1012,25 +926,22 @@ textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-
 .adm-user select,.adm-user input{width:auto;padding:5px;background:var(--panel);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;margin:0}
 .adm-user .btn{width:auto;padding:5px 9px;font-size:12px;margin:0}
 .prem-row{display:flex;gap:5px;align-items:center;margin-bottom:9px}
-.prem-row input{width:78px;margin:0}
-.prem-row select{flex:1;margin:0}
+.prem-row input{width:78px;margin:0}.prem-row select{flex:1;margin:0}
 @media(max-width:1024px){.sidebar{position:fixed;left:0;top:0;bottom:0}}
 @media(max-width:768px){
 .sidebar{position:fixed;left:0;top:0;bottom:0;transform:translateX(-100%)}
 .sidebar.open{transform:translateX(0);box-shadow:0 0 40px rgba(0,0,0,.5)}
-.msg .bubble{max-width:90%}
-.msg .bubble img.a{max-width:150px}
+.msg .bubble{max-width:90%}.msg .bubble img.a{max-width:150px}
 }
 @media (prefers-reduced-motion: reduce){.part{display:none}}
 </style></head>
 <body data-theme="dark">
-<div class="bg-anim"></div>
-<div class="particles" id="particles"></div>
+<div class="bg-anim"></div><div class="particles" id="particles"></div>
 <div class="app">
 <aside class="sidebar" id="sidebar">
 <div class="sidebar-header">
 <button class="side-toggle" onclick="toggleSidebarCollapse()" title="Свернуть">←</button>
-<div class="logo">🤖</div><div class="brand">AWESOME AI PRO</div>
+<div class="logo">🤖</div><div class="brand">AWESOME AI</div>
 </div>
 <button class="new-chat" onclick="newChat()">＋ Новый чат</button>
 <div class="chat-list scrollbar" id="chatList"></div>
@@ -1077,7 +988,7 @@ textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-
 <div class="toolbar">
 <button class="tool-btn" onclick="draw()">🎨 Сгенерировать</button>
 <button class="tool-btn" onclick="checkStatus()">💎 Статус</button>
-<button class="tool-btn" onclick="searchShow()">🔍 Поиск по чатам</button>
+<button class="tool-btn" onclick="searchShow()">🔍 Поиск</button>
 <button class="tool-btn" onclick="showQuickTools()">⚡ Быстрые</button>
 <button class="tool-btn" onclick="regenLast()">🔄 Переген</button>
 <button class="tool-btn" onclick="stopGen()">⏹ Стоп</button>
@@ -1088,14 +999,12 @@ textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-
 <div class="modal">
 <div class="logo" style="width:56px;height:56px;font-size:28px;margin:0 auto 14px;display:flex;align-items:center;justify-content:center;border-radius:14px;background:linear-gradient(135deg,var(--accent),var(--accent2))">🤖</div>
 <div class="tabs"><button class="tab active" id="tabLogin" onclick="switchTab('login')">Вход</button><button class="tab" id="tabReg" onclick="switchTab('reg')">Регистрация</button></div>
-<h2 id="authTitle">Вход</h2><p id="authSub">Войди по Telegram-ID</p>
+<h2 id="authTitle">Вход</h2><p id="authSub">Войди в свой аккаунт</p>
 <div id="regFields" style="display:none"><input type="text" id="regName" placeholder="Имя (обязательно)"></div>
-<input type="text" id="regId" placeholder="Telegram-ID (обязательно)" inputmode="numeric">
-<input type="password" id="regPass" placeholder="Пароль (обязательно)">
+<input type="text" id="authLogin" placeholder="Логин (обязательно)">
+<input type="password" id="authPass" placeholder="Пароль (обязательно)">
 <button class="btn" id="authBtn" onclick="submitAuth()">Войти</button>
-<button class="btn ghost" onclick="tgLogin()" style="margin-top:4px">🔐 Войти через Telegram</button>
-<div style="text-align:center;margin:6px 0" id="tgWidget"></div>
-<div class="hint">Твой Premium/статус из ТГ-бота применяется автоматически по Telegram-ID. Пароль сохраняется навсегда.</div>
+<div class="hint">Пароль сохраняется навсегда. Владелец: логин <b>admin</b></div>
 </div></div>
 
 <div class="overlay" id="settingsOverlay">
@@ -1137,9 +1046,7 @@ async function api(url,method,body){try{const o={method:method||'GET',headers:{'
 function setTheme(t){currentTheme=t;document.body.setAttribute('data-theme',t);try{localStorage.setItem('awesome_theme',t);}catch(e){}}
 function toggleTheme(){setTheme(currentTheme==='dark'?'light':'dark');api('/api/settings','POST',{theme:currentTheme});}
 function switchTab(m){authMode=m;document.getElementById('tabLogin').className='tab'+(m==='login'?' active':'');document.getElementById('tabReg').className='tab'+(m==='reg'?' active':'');document.getElementById('regFields').style.display=m==='reg'?'block':'none';document.getElementById('authTitle').textContent=m==='reg'?'Регистрация':'Вход';document.getElementById('authBtn').textContent=m==='reg'?'Создать аккаунт':'Войти';}
-function tgLogin(){const c=document.getElementById('tgWidget');c.innerHTML='<p style="color:var(--muted);font-size:12px">Загрузка кнопки Telegram...</p>';const s=document.createElement('script');s.async=true;s.src='https://telegram.org/js/telegram-widget.js?22';s.setAttribute('data-telegram-login','awesomeneiro_bot');s.setAttribute('data-size','large');s.setAttribute('data-radius','10');s.setAttribute('data-auth-url',location.origin+'/tg_oauth');s.setAttribute('data-request-access','write');s.onerror=()=>{c.innerHTML='<p style="color:var(--danger);font-size:12px">Не удалось загрузить. Проверь домен в BotFather (/setdomain)</p>';};c.appendChild(s);}
-window.addEventListener('message',e=>{if(e.data==='tg_ok'){toast('Вход выполнен!','success');init();}});
-async function submitAuth(){const id=document.getElementById('regId').value.trim(),pw=document.getElementById('regPass').value;if(!id||!pw){toast('Заполни Telegram-ID и пароль','error');return;}let body={telegram_id:id,password:pw};if(authMode==='reg'){const name=document.getElementById('regName').value.trim();if(!name){toast('Имя обязательно','error');return;}body.name=name;}const r=await api(authMode==='reg'?'/api/register':'/api/login','POST',body);if(r.ok){currentUserId=r.user_id;closeOverlay('authOverlay');toast('Добро пожаловать!','success');init();}else toast(r.error||'Ошибка','error');}
+async function submitAuth(){const login=document.getElementById('authLogin').value.trim(),pw=document.getElementById('authPass').value;if(!login||!pw){toast('Заполни логин и пароль','error');return;}let body={login:login,password:pw};if(authMode==='reg'){const name=document.getElementById('regName').value.trim();if(!name){toast('Имя обязательно','error');return;}body.name=name;}const r=await api(authMode==='reg'?'/api/register':'/api/login','POST',body);if(r.ok){currentUserId=r.user_id;closeOverlay('authOverlay');toast('Добро пожаловать!','success');init();}else toast(r.error||'Ошибка','error');}
 async function logout(){await api('/api/logout','POST');location.reload();}
 function openOverlay(id){document.getElementById(id).classList.add('show');}
 function closeOverlay(id){document.getElementById(id).classList.remove('show');}
@@ -1154,26 +1061,24 @@ h+='<div class="scard"><div class="n">'+r.messages+'</div><div class="l">Соо�
 h+='</div><h3 style="margin:10px 0">👥 Пользователи</h3>';
 (r.users||[]).forEach(u=>{h+='<div class="adm-user"><span class="nm"><b>'+esc(u.name||u.id)+'</b> (#'+esc(u.id)+') Lv'+u.level+'</span>';
 h+='<span style="font-size:11px">'+(u.expires?esc(u.expires):'')+'</span>';
-h+='<select onchange="admGivePrem(\''+esc(u.id)+'\',this.value)"><option value="">Выдать Premium</option><option value="1_h">1 час</option><option value="1_d">1 день</option><option value="2_d">2 дня</option><option value="7_d">7 дней</option><option value="1_mo">1 месяц</option><option value="3_mo">3 месяца</option><option value="1_y">1 год</option></select>';
+h+='<select onchange="admGivePrem(\''+esc(u.id)+'\',this.value)"><option value="">Выдать Premium</option><option value="1_h">1 час</option><option value="1_d">1 день</option><option value="7_d">7 дней</option><option value="1_mo">1 месяц</option><option value="1_y">1 год</option></select>';
 h+='<button class="btn danger" onclick="admAction(\''+esc(u.id)+'\',\'take_prem\')">-Prem</button>';
-h+='<button class="btn" onclick="admAction(\''+esc(u.id)+'\',\'give_admin\')">👑 Админ</button>';
+h+='<button class="btn" onclick="admAction(\''+esc(u.id)+'\',\'give_admin\')">🛡 Админ</button>';
 h+='<button class="btn danger" onclick="admDel(\''+esc(u.id)+'\')">🗑</button></div>';});
 h+='<h3 style="margin:12px 0">🎁 Выдать Premium (свой срок)</h3>';
 h+='<div class="prem-row"><input type="number" id="premNum" value="1" min="1" style="width:80px"><select id="premUnit"><option value="s">секунд</option><option value="min">минут</option><option value="h">часов</option><option value="d">дней</option><option value="w">недель</option><option value="mo">месяцев</option><option value="y">лет</option></select></div>';
-h+='<div class="prem-row"><input type="text" id="premTgId" placeholder="Telegram-ID получателя"><button class="btn" onclick="admCustomPrem()">Выдать</button></div>';
-h+='<h3 style="margin:12px 0">🔑 Сброс пароля</h3><input id="rpId" placeholder="Telegram-ID"><input id="rpPass" placeholder="Новый пароль"><button class="btn" onclick="adminResetPass()">Сбросить</button>';
-h+='<h3 style="margin:12px 0">📢 Рассылка</h3><textarea id="bcastText" style="width:100%;padding:10px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;color:var(--text);resize:none" rows="2"></textarea><button class="btn" style="margin-top:6px" onclick="adminBroadcast()">Отправить всем</button>';
-h+='<h3 style="margin:12px 0">⚙️ Тема пользователя</h3><div class="prem-row"><input type="text" id="thId" placeholder="Telegram-ID"><select id="thVal"><option value="dark">Тёмная</option><option value="light">Светлая</option></select><button class="btn" onclick="admSetTheme()">Применить</button></div>';
+h+='<div class="prem-row"><input type="text" id="premTgId" placeholder="Логин получателя"><button class="btn" onclick="admCustomPrem()">Выдать</button></div>';
+h+='<h3 style="margin:12px 0">🔑 Сброс пароля</h3><input id="rpId" placeholder="Логин"><input id="rpPass" placeholder="Новый пароль"><button class="btn" onclick="adminResetPass()">Сбросить</button>';
+h+='<h3 style="margin:12px 0">⚙️ Тема пользователя</h3><div class="prem-row"><input type="text" id="thId" placeholder="Логин"><select id="thVal"><option value="dark">Тёмная</option><option value="light">Светлая</option></select><button class="btn" onclick="admSetTheme()">Применить</button></div>';
 h+='<button class="btn danger" onclick="adminResetDb()">🗑 Полная очистка аккаунтов</button>';
 document.getElementById('adminContent').innerHTML=h;openOverlay('adminOverlay');}
 async function admAction(id,action){const r=await api('/api/admin/give','POST',{user_id:id,action:action});if(r.ok){toast('OK','success');openAdmin();}else toast(r.error||'Ошибка','error');}
 async function admGivePrem(id,val){if(!val)return;const parts=val.split('_');const r=await api('/api/admin/give','POST',{user_id:id,action:'give_prem',num:parts[0],unit:parts[1]});if(r.ok){toast('Premium выдан','success');openAdmin();}else toast(r.error||'Ошибка','error');}
 async function admCustomPrem(){const id=document.getElementById('premTgId').value.trim(),num=document.getElementById('premNum').value,unit=document.getElementById('premUnit').value;if(!id||!num){toast('Заполни поля','error');return;}const r=await api('/api/admin/give','POST',{user_id:id,action:'give_prem',num:num,unit:unit});if(r.ok){toast('Premium выдан','success');openAdmin();}else toast(r.error||'Ошибка','error');}
 async function admDel(id){if(!confirm('Удалить аккаунт '+id+'?'))return;const r=await api('/api/admin/give','POST',{user_id:id,action:'delete_user'});if(r.ok){toast('Удалён','success');openAdmin();}}
-async function admSetTheme(){const id=document.getElementById('thId').value.trim(),v=document.getElementById('thVal').value;if(!id){toast('Укажи ID','error');return;}const r=await api('/api/admin/give','POST',{user_id:id,action:'set_theme',value:v});if(r.ok){toast('Тема изменена','success');openAdmin();}}
+async function admSetTheme(){const id=document.getElementById('thId').value.trim(),v=document.getElementById('thVal').value;if(!id){toast('Укажи логин','error');return;}const r=await api('/api/admin/give','POST',{user_id:id,action:'set_theme',value:v});if(r.ok){toast('Тема изменена','success');openAdmin();}}
 async function adminResetPass(){const id=document.getElementById('rpId').value.trim(),pw=document.getElementById('rpPass').value;if(!id||!pw){toast('Заполни поля','error');return;}const r=await api('/api/admin/give','POST',{user_id:id,action:'reset_pass',password:pw});if(r.ok){toast('Пароль сброшен','success');openAdmin();}else toast('Ошибка','error');}
 async function adminResetDb(){if(!confirm('Удалить ВСЕ аккаунты? Это сбросит все пароли!'))return;const r=await api('/api/admin/reset_db','POST');if(r.ok){toast('База очищена','success');}}
-async function adminBroadcast(){const t=document.getElementById('bcastText').value;if(!t)return;const r=await api('/api/admin/broadcast','POST',{text:t});if(r.ok){toast('Отправлено: '+r.sent+'/'+r.total,'success');}}
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function handleFile(inp){const f=inp.files[0];if(!f)return;attachedType=f.type.includes('pdf')?'pdf':'image';const reader=new FileReader();reader.onload=e=>{attachedImage=e.target.result;document.getElementById('attachImg').src=attachedType==='image'?attachedImage:'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg"><text y="30" font-size="20">📄</text></svg>';document.getElementById('attachName').textContent=f.name;document.getElementById('attachPreview').style.display='flex';};reader.readAsDataURL(f);inp.value='';}
 function removeAttach(){attachedImage=null;document.getElementById('attachPreview').style.display='none';}
@@ -1214,6 +1119,6 @@ document.addEventListener('DOMContentLoaded',init);
 </script></body></html>"""
 
 if __name__ == '__main__':
-    print("🧠 AWESOME AI WEB — PRO ULTRA: Telegram-вход, память, поиск, 40+ функций")
-    port=int(os.getenv("PORT",5000))
-    app.run(host='0.0.0.0',port=port,debug=False,threaded=True)
+    print("🧠 AWESOME AI WEB — ULTRA v2 (имя + логин + пароль)")
+    port = int(os.getenv("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
