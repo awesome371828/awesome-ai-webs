@@ -383,7 +383,13 @@ def smart_answer(uid,text,history,img_desc=None,doc=None):
         return "🧠 **Что я помню о тебе:**\n"+("\n".join("• "+f for f in mem) if mem else "Пока ничего.")
     if "кто ты" in tl or "что ты умеешь" in tl:
         return "Я **AWESOME AI** ✨\n**1.** Общаюсь 🗣\n**2.** Анализирую фото 🖼\n**3.** Помню о тебе 🧠\n**4.** Ищу в интернете 🌐\n**5.** Считаю 🧮\n**6.** Рисую 🎨\n**7.** Погода/валюты/крипта 🌤💵🪙\n**8.** Перевожу 🌍\n**9.** Шучу 😂\n\nЧто попробуем?"
-    if re.search(r'\d+\s*[\+\-\*\/]\s*\d+',tl):
+    if re.search(r'\d+\s*[\+\-\*\/]\s*\d+', tl):
+        try:
+            expr = re.sub(r'[^0-9+\-*/(). ]', '', tl)
+            res = eval(expr)
+            return f"🧮 Результат: **{res}**"
+        except Exception:
+            return "🧮 Не понял выражение. Например: 2+2*3"
         try: return f"🧮 Результат: **{eval(re.sub(r'[^0-9+\-*/(). ]','',tl))}**"
         except: return "🧮 Не понял выражение."
     if "режим" in tl or "стань" in tl:
