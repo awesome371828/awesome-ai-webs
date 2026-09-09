@@ -35,7 +35,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 OWNER_LOGIN, OWNER_PASSWORD = "admin", "qawsedrf2346"
 FREE_LIMIT = 50   # лимит запросов в день для бесплатных
-MAX_HISTORY = 24
+MAX_HISTORY = 100
 GIGA_TIMEOUT, YGPT_TIMEOUT, SEARCH_TIMEOUT = 30, 25, 5
 
 MOSCOW_TZ = timezone(timedelta(hours=3))
