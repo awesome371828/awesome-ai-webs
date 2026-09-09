@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-ы
-"""AWESOME AI WEB — ULTRA v2: вход по имени+логину+паролю, ChatGPT-интерфейс, память, поиск, 40+ функций"""
+# -*- coding: utf-8 -*-
+"""AWESOME AI — ChatGPT Clone: Supabase DB, вход по имени+логину+паролю, cookie, поддержка"""
 import os, re, io, time, json, base64, urllib.parse, hashlib, random, html, uuid as _uuid
 from datetime import datetime, timedelta, timezone
 import requests, urllib3
-import psycopg2, psycopg2.extras
 from flask import Flask, request, jsonify, render_template_string, session, send_file
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -22,23 +21,22 @@ except ImportError:
     HAS_PIL = False
 
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY", "awesome-ai-super-secret-key-2026")
+app.secret_key = os.getenv("SECRET_KEY", "awesome-ai-chatgpt-secret-2026")
 app.permanent_session_lifetime = timedelta(days=30)
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 
-# ============ КЛЮЧИ (фиксированные) ============
-YANDEX_API_KEY   = os.getenv("YANDEX_API_KEY", "AQVNyfn82epL9dy8C_kftzeypq6eF9lFd6SZnFzV")
-FOLDER_ID        = os.getenv("FOLDER_ID", "b1g4aq87c7j61c6g3i5l")
+# ===== КЛЮЧИ =====
+YANDEX_API_KEY    = os.getenv("YANDEX_API_KEY", "AQVNyfn82epL9dy8C_kftzeypq6eF9lFd6SZnFzV")
+FOLDER_ID         = os.getenv("FOLDER_ID", "b1g4aq87c7j61c6g3i5l")
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY", "MDFhMDBkNmEtMmExNC03M2JkLWFlZmMtOTQ0OWVlOTc5M2U1OmE1ZWJhM2NlLTQwYjAtNDZlYi1iMmY2LTE3OTFmYzhhYTQ2MA==")
-DATABASE_URL     = os.getenv("DATABASE_URL", "postgresql://u_cmsu43cr30:3sdZICdPDoR1DUrRRKsJ8yW1BqrH2PvZ@db-team-cmsu3ykqi0295mo01tsv8m15p:5432/db_awesome_ai_web")
+SUPABASE_URL  = os.getenv("SUPABASE_URL", "https://lprxbmshmuucymkgaqwk.supabase.co")
+SUPABASE_KEY  = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxwcnhibXNobXV1Y3lta2dhcXdrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY3NDk0MjgsImV4cCI6MjEwMjMyNTQyOH0.Ie9jSH5RMxeOq8aU-Dv6MXlojWMUTOLE723Hdg6heZU")
+SUPPORT_USERNAME = "@flidges"
 
-# Владелец сайта — создаётся автоматически при первом запуске
 OWNER_LOGIN    = os.getenv("OWNER_LOGIN", "admin")
 OWNER_PASSWORD = os.getenv("OWNER_PASSWORD", "qawsedrf2346")
-OWNER_NAME     = "AWESOME"
-
-FREE_LIMIT  = 40
-MAX_HISTORY = 24
+FREE_LIMIT   = 40
+MAX_HISTORY  = 24
 GIGA_TIMEOUT = 30
 YGPT_TIMEOUT = 25
 SEARCH_TIMEOUT = 4
@@ -49,297 +47,203 @@ def gdate(): return gm().strftime('%d.%m.%Y')
 def now_iso(): return gm().strftime('%Y-%m-%d %H:%M:%S')
 def fmt_date(s):
     if not s: return "—"
-    try: return datetime.strptime(s, '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y %H:%M')
-    except: return s
+    try:
+        v = str(s).replace('T',' ')[:19]
+        return datetime.strptime(v, '%Y-%m-%d %H:%M:%S').strftime('%d.%m.%Y %H:%M')
+    except Exception: return s
 def hash_pw(p): return hashlib.sha256(p.encode()).hexdigest()
-def get_db(): return psycopg2.connect(DATABASE_URL)
 
-# ============ БАЗА ДАННЫХ ============
-def init_db():
-    conn = get_db(); cur = conn.cursor()
-    def ex(sql, args=None):
-        try: cur.execute(sql, args or ()); conn.commit()
-        except Exception: conn.rollback()
-    ex("""CREATE TABLE IF NOT EXISTS users(
-        user_id TEXT PRIMARY KEY, login TEXT UNIQUE, name TEXT, password TEXT,
-        premium INTEGER DEFAULT 0, messages_today INTEGER DEFAULT 0, last_reset TEXT,
-        premium_expires TEXT, is_admin INTEGER DEFAULT 0, is_owner INTEGER DEFAULT 0,
-        theme TEXT DEFAULT 'dark', joined_at TEXT, xp INTEGER DEFAULT 0, level INTEGER DEFAULT 1,
-        avatar TEXT DEFAULT '', ref_code TEXT, ref_count INTEGER DEFAULT 0)""")
-    ex("""CREATE TABLE IF NOT EXISTS chats_web(id BIGSERIAL PRIMARY KEY, user_id TEXT,
-        title TEXT DEFAULT 'Новый чат', created_at TEXT, pinned INTEGER DEFAULT 0)""")
-    ex("""CREATE TABLE IF NOT EXISTS messages_web(id BIGSERIAL PRIMARY KEY, chat_id BIGINT,
-        role TEXT, content TEXT, image TEXT, created_at TEXT)""")
-    ex("""CREATE TABLE IF NOT EXISTS total_stats_web(user_id TEXT PRIMARY KEY, total_messages INTEGER DEFAULT 0)""")
-    ex("""CREATE TABLE IF NOT EXISTS shared_chats(id TEXT PRIMARY KEY, chat_id BIGINT, created_at TEXT)""")
-    ex("""CREATE TABLE IF NOT EXISTS admin_log(id BIGSERIAL PRIMARY KEY, admin_id TEXT, action TEXT, created_at TEXT)""")
-    ex("""CREATE TABLE IF NOT EXISTS notifications(id BIGSERIAL PRIMARY KEY, user_id TEXT, text TEXT, read INTEGER DEFAULT 0, created_at TEXT)""")
-    ex("""CREATE TABLE IF NOT EXISTS user_memory(id BIGSERIAL PRIMARY KEY, user_id TEXT,
-        fact TEXT, source TEXT DEFAULT 'auto', created_at TEXT)""")
-    ex("""CREATE TABLE IF NOT EXISTS web_cache(query TEXT PRIMARY KEY, result TEXT, ts TEXT)""")
-    for col in ['login', 'name', 'password', 'avatar', 'ref_code', 'ref_count']:
-        ex(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} TEXT DEFAULT ''")
-    ex("ALTER TABLE chats_web ADD COLUMN IF NOT EXISTS pinned INTEGER DEFAULT 0")
-    ex("ALTER TABLE messages_web ADD COLUMN IF NOT EXISTS image TEXT")
-    try:
-        cur.execute("SELECT data_type FROM information_schema.columns WHERE table_name='users' AND column_name='xp'")
-        row = cur.fetchone()
-        if row and row[0] == 'text':
-            cur.execute("UPDATE users SET xp='0' WHERE xp IS NULL OR xp='' OR xp !~ '^[0-9]+$'")
-            cur.execute("ALTER TABLE users ALTER COLUMN xp TYPE INTEGER USING (CASE WHEN xp IS NULL OR xp='' THEN 0 ELSE xp::int END)")
-        conn.commit()
-    except Exception: conn.rollback()
-    # Создаём владельца автоматически (пароль НЕ перезаписываем)
-    try:
-        cur.execute("SELECT user_id FROM users WHERE login=%s", (OWNER_LOGIN,))
-        if not cur.fetchone():
-            cur.execute("INSERT INTO users(user_id,login,name,password,messages_today,last_reset,is_admin,is_owner,theme,joined_at) VALUES(%s,%s,%s,%s,0,%s,1,1,'dark',%s)",
-                        (OWNER_LOGIN, OWNER_LOGIN, OWNER_NAME, hash_pw(OWNER_PASSWORD), gm().strftime('%Y-%m-%d'), now_iso()))
-            cur.execute("INSERT INTO total_stats_web(user_id,total_messages) VALUES(%s,0) ON CONFLICT DO NOTHING", (OWNER_LOGIN,))
-        conn.commit()
-    except Exception: conn.rollback()
-    cur.close(); conn.close()
+# ===== SUPABASE =====
+from supabase import create_client
+_sb = None
+try:
+    _sb = create_client(SUPABASE_URL, SUPABASE_KEY)
+except Exception:
+    _sb = None
 
-init_db()
+def sb_table(name): return _sb.table(name) if _sb else None
 
-# ============ АККАУНТЫ (имя + логин + пароль) ============
-def is_owner(login=None):
-    return bool(login and str(login).lower() == OWNER_LOGIN.lower())
-
-def reg_user(login, name, pw):
-    login = (login or "").strip()
-    name  = (name or "").strip()
-    if not login or len(login) < 3:  return False, "Логин мин. 3 символа"
-    if not name:                      return False, "Имя обязательно"
-    if not pw or len(pw) < 3:         return False, "Пароль мин. 3 символа"
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT user_id FROM users WHERE login=%s", (login,))
-    if cur.fetchone(): cur.close(); conn.close(); return False, "Этот логин уже занят"
-    ref_code = hashlib.md5((login + str(random.random())).encode()).hexdigest()[:8]
-    owner = 1 if is_owner(login) else 0
-    cur.execute("INSERT INTO users(user_id,login,name,password,messages_today,last_reset,is_admin,is_owner,theme,joined_at,ref_code) VALUES(%s,%s,%s,%s,0,%s,%s,%s,'dark',%s,%s)",
-                (login, login, name, hash_pw(pw), gm().strftime('%Y-%m-%d'), owner, owner, now_iso(), ref_code))
-    cur.execute("INSERT INTO total_stats_web(user_id,total_messages) VALUES(%s,0) ON CONFLICT DO NOTHING", (login,))
-    conn.commit(); cur.close(); conn.close()
-    return True, "OK"
-
-def login_user(login, pw):
-    login = (login or "").strip()
-    if not login: return False, "Введи логин"
-    conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM users WHERE login=%s", (login,))
-    row = cur.fetchone(); cur.close(); conn.close()
-    if not row: return False, "Аккаунт не найден. Зарегистрируйся"
-    if row['password'] != hash_pw(pw): return False, "Неверный пароль"
-    return True, "OK"
-
+# ----- Пользователи -----
 def get_user(uid):
-    conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM users WHERE user_id=%s", (str(uid),))
-    row = cur.fetchone(); cur.close(); conn.close()
-    return dict(row) if row else None
+    if not _sb: return None
+    try:
+        r = _sb.table('users').select('*').eq('user_id', str(uid)).execute()
+        return r.data[0] if r.data else None
+    except Exception:
+        return None
 
 def get_user_by_login(login):
-    conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM users WHERE login=%s", (str(login),))
-    row = cur.fetchone(); cur.close(); conn.close()
-    return dict(row) if row else None
+    if not _sb: return None
+    try:
+        r = _sb.table('users').select('*').eq('login', str(login)).execute()
+        return r.data[0] if r.data else None
+    except Exception:
+        return None
+
+def reg_user(login, name, pw):
+    login = (login or '').strip(); name = (name or '').strip()
+    if not login or len(login) < 3: return False, "Логин мин. 3 символа"
+    if not name: return False, "Имя обязательно"
+    if not pw or len(pw) < 3: return False, "Пароль мин. 3 символа"
+    if not _sb: return False, "База недоступна"
+    if get_user_by_login(login): return False, "Этот логин уже занят"
+    try:
+        owner = 1 if login.lower() == OWNER_LOGIN.lower() else 0
+        data = {
+            "user_id": login,
+            "login": login,
+            "name": name,
+            "password": hash_pw(pw),
+            "messages_today": 0,
+            "premium": 0,
+            "is_admin": owner,
+            "is_owner": owner,
+            "theme": "light",
+            "joined_at": now_iso(),
+            "xp": 0,
+            "level": 1,
+            "ref_code": hashlib.md5((login+str(random.random())).encode()).hexdigest()[:8],
+            "ref_count": 0,
+            "last_reset": gm().strftime('%Y-%m-%d'),
+        }
+        _sb.table('users').insert(data).execute()
+        return True, "OK"
+    except Exception as e:
+        return False, "Ошибка БД: " + str(e)
+
+def login_user(login, pw):
+    login = (login or '').strip()
+    if not login: return False, "Введи логин"
+    u = get_user_by_login(login)
+    if not u: return False, "Аккаунт не найден. Зарегистрируйся"
+    if u.get('password') != hash_pw(pw): return False, "Неверный пароль"
+    return True, "OK"
 
 def eff_status(uid):
     u = get_user(uid) or {}
-    owner = 1 if is_owner(u.get('login')) else int(u.get('is_owner', 0))
-    is_admin = 1 if owner else int(u.get('is_admin', 0))
-    premium = int(u.get('premium', 0))
+    owner = 1 if str(u.get('login','')).lower() == OWNER_LOGIN.lower() else int(u.get('is_owner',0) or 0)
+    is_admin = 1 if owner else int(u.get('is_admin',0) or 0)
+    premium = int(u.get('premium',0) or 0)
     expires = u.get('premium_expires')
-    if premium == 1 and expires:
+    if premium and expires:
         try:
-            if gm() > datetime.strptime(str(expires)[:19], '%Y-%m-%d %H:%M:%S').replace(tzinfo=MOSCOW_TZ):
+            if gm() > datetime.strptime(str(expires).replace('T',' ')[:19],'%Y-%m-%d %H:%M:%S').replace(tzinfo=MOSCOW_TZ):
                 premium = 0; expires = None
         except Exception: pass
     return {'premium': 1 if owner or premium else 0, 'premium_expires': expires,
             'is_admin': is_admin, 'is_owner': owner,
-            'level': int(u.get('level', 1) or 1), 'xp': int(u.get('xp', 0) or 0), 'ref_count': u.get('ref_count', 0)}
+            'level': int(u.get('level',1) or 1), 'xp': int(u.get('xp',0) or 0), 'ref_count': u.get('ref_count',0)}
 
 def can_send(uid):
     s = eff_status(uid)
     if s['is_owner'] or s['is_admin'] or s['premium']: return True
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT messages_today FROM users WHERE user_id=%s", (str(uid),))
-    row = cur.fetchone(); cur.close(); conn.close()
-    return (row[0] if row else 0) < FREE_LIMIT
+    u = get_user(uid) or {}
+    return int(u.get('messages_today',0) or 0) < FREE_LIMIT
 
 def incr(uid):
     s = eff_status(uid)
+    u = get_user(uid) or {}
+    cnt = int(u.get('messages_today',0) or 0)
     if s['is_owner'] or s['is_admin']:
-        try: add_xp(uid, 5)
-        except Exception: pass
-        return
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("UPDATE users SET messages_today=messages_today+1 WHERE user_id=%s", (str(uid),))
-    cur.execute("INSERT INTO total_stats_web(user_id,total_messages) VALUES(%s,1) ON CONFLICT(user_id) DO UPDATE SET total_messages=total_stats_web.total_messages+1", (str(uid),))
-    conn.commit(); cur.close(); conn.close()
-    try: add_xp(uid, 10)
+        add_xp(uid, 5); return
+    try:
+        _sb.table('users').update({'messages_today': cnt+1}).eq('user_id', str(uid)).execute()
     except Exception: pass
+    add_xp(uid, 10)
 
 def add_xp(uid, amt):
     try:
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("UPDATE users SET xp=(CASE WHEN xp IS NULL THEN 0 ELSE xp END)+%s WHERE user_id=%s", (int(amt), str(uid)))
-        cur.execute("UPDATE users SET level=1+floor((CASE WHEN xp IS NULL THEN 0 ELSE xp END)/100) WHERE user_id=%s", (str(uid),))
-        conn.commit(); cur.close(); conn.close()
-    except Exception:
-        try:
-            conn = get_db(); cur = conn.cursor()
-            cur.execute("UPDATE users SET xp=(CASE WHEN xp IS NULL OR xp='' THEN 0 ELSE xp::int END)+%s WHERE user_id=%s", (int(amt), str(uid)))
-            cur.execute("UPDATE users SET level=1+floor((CASE WHEN xp IS NULL OR xp='' THEN 0 ELSE xp::int END)/100) WHERE user_id=%s", (str(uid),))
-            conn.commit(); cur.close(); conn.close()
-        except Exception: pass
+        u = get_user(uid) or {}
+        xp = int(u.get('xp',0) or 0) + int(amt)
+        lvl = 1 + xp // 100
+        _sb.table('users').update({'xp': xp, 'level': lvl}).eq('user_id', str(uid)).execute()
+    except Exception: pass
 
 def upd_settings(uid, **kw):
-    conn = get_db(); cur = conn.cursor()
-    for k, v in kw.items():
-        if v is not None: cur.execute(f"UPDATE users SET {k}=%s WHERE user_id=%s", (v, str(uid)))
-    conn.commit(); cur.close(); conn.close()
-
-def log_admin(admin_id, action):
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("INSERT INTO admin_log(admin_id,action,created_at) VALUES(%s,%s,%s)", (str(admin_id), action, now_iso()))
-    conn.commit(); cur.close(); conn.close()
-
-def notify(uid, text):
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("INSERT INTO notifications(user_id,text,created_at) VALUES(%s,%s,%s)", (str(uid), text, now_iso()))
-    conn.commit(); cur.close(); conn.close()
-
-# ============ ПАМЯТЬ О ПОЛЬЗОВАТЕЛЕ ============
-def get_memory(uid, limit=30):
     try:
-        conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-        cur.execute("SELECT fact FROM user_memory WHERE user_id=%s ORDER BY id DESC LIMIT %s", (str(uid), limit))
-        rows = cur.fetchall(); cur.close(); conn.close()
-        return [r['fact'] for r in rows]
-    except Exception: return []
+        _sb.table('users').update({k:v for k,v in kw.items() if v is not None}).eq('user_id', str(uid)).execute()
+    except Exception: pass
 
+# ----- Память -----
+def get_memory(uid, limit=30):
+    if not _sb: return []
+    try:
+        r = _sb.table('user_memory').select('fact').eq('user_id', str(uid)).order('id', desc=True).limit(limit).execute()
+        return [x['fact'] for x in r.data]
+    except Exception: return []
 def remember(uid, fact):
     fact = (fact or '').strip()[:500]
     if not fact or len(fact) < 4: return
+    if not _sb: return
     try:
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM user_memory WHERE user_id=%s AND fact=%s", (str(uid), fact))
-        if cur.fetchone()[0] == 0:
-            cur.execute("INSERT INTO user_memory(user_id,fact,created_at) VALUES(%s,%s,%s)", (str(uid), fact, now_iso()))
-        conn.commit(); cur.close(); conn.close()
+        dup = _sb.table('user_memory').select('id').eq('user_id', str(uid)).eq('fact', fact).execute()
+        if not dup.data:
+            _sb.table('user_memory').insert({'user_id': str(uid), 'fact': fact, 'created_at': now_iso()}).execute()
     except Exception: pass
 
 def extract_facts(uid, text):
-    facts = []
-    tl = text.lower()
+    tl = text.lower(); facts = []
     if "меня зовут" in tl or "мое имя" in tl:
         m = re.search(r'(?:меня зовут|мое имя)[:\s]+([А-Яа-яЁёA-Za-z\-]+)', tl)
-        if m: facts.append("Имя пользователя: " + m.group(1))
-    for kw, label in [("мне ", "Возраст: "), ("я живу в ", "Город: "), ("я работаю ", "Работа: "), ("учусь в ", "Учёба: "), ("я из ", "Город: ")]:
+        if m: facts.append("Имя пользователя: "+m.group(1))
+    for kw,label in [("мне ", "Возраст: "),("я живу в ", "Город: "),("я работаю ", "Работа: "),("учусь в ", "Учёба: "),("я из ", "Город: ")]:
         if kw in tl:
-            m = re.search(re.escape(kw) + r'([^,.!?\n]{2,60})', tl)
-            if m: facts.append(label + m.group(1).strip())
-    if any(x in tl for x in ["мне нравится", "я люблю", "обожаю"]):
+            m = re.search(re.escape(kw)+r'([^,.!?\n]{2,60})', tl)
+            if m: facts.append(label+m.group(1).strip())
+    if any(x in tl for x in ["мне нравится","я люблю","обожаю"]):
         m = re.search(r'(?:мне нравится|я люблю|обожаю)\s+([^,.!?\n]{2,60})', tl)
-        if m: facts.append("Интерес/хобби: " + m.group(1).strip())
+        if m: facts.append("Интерес/хобби: "+m.group(1).strip())
     for f in facts: remember(uid, f)
-    return facts
 
-# ============ ИНТЕРНЕТ-ПОИСК ============
-def _search_ddg(query, num=6):
-    try:
-        r = requests.get("https://html.duckduckgo.com/html/", params={"q": query},
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, timeout=8, verify=False)
-        if r.status_code != 200: return []
-        out = []
-        for m in re.finditer(r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', r.text):
-            url = m.group(1); title = re.sub(r'<[^>]+>', '', m.group(2))
-            if url.startswith('//duckduckgo.com/l/?uddg='):
-                url = urllib.parse.unquote(url.split('uddg=')[1].split('&')[0])
-            sn = re.search(r'class="result__snippet"[^>]*>(.*?)</a>', r.text)
-            snippet = re.sub(r'<[^>]+>', '', sn.group(1)) if sn else ''
-            out.append((title.strip(), url, snippet.strip()))
-            if len(out) >= num: break
-        return out
-    except Exception: return []
-
-def _search_bing(query, num=5):
-    try:
-        r = requests.get("https://www.bing.com/search", params={"q": query},
-            headers={"User-Agent": "Mozilla/5.0"}, timeout=8, verify=False)
-        if r.status_code != 200: return []
-        out = []
-        for m in re.finditer(r'<h2><a href="([^"]+)"[^>]*>(.*?)</a></h2>', r.text):
-            out.append((re.sub(r'<[^>]+>', '', m.group(2)).strip(), m.group(1), ''))
-            if len(out) >= num: break
-        return out
-    except Exception: return []
-
-def web_search(query, num=6):
-    qkey = hashlib.md5((query.lower() + '|' + gdate()).encode()).hexdigest()
-    try:
-        conn = get_db(); cur = conn.cursor()
-        cur.execute("SELECT result FROM web_cache WHERE query=%s", (qkey,))
-        row = cur.fetchone(); cur.close(); conn.close()
-        if row: return json.loads(row[0])
-    except Exception: pass
-    results = _search_ddg(query, num) or _search_bing(query, num)
-    if results:
-        try:
-            conn = get_db(); cur = conn.cursor()
-            cur.execute("INSERT INTO web_cache(query,result,ts) VALUES(%s,%s,%s) ON CONFLICT(query) DO UPDATE SET result=%s,ts=%s",
-                (qkey, json.dumps(results), now_iso(), json.dumps(results), now_iso()))
-            conn.commit(); cur.close(); conn.close()
-        except Exception: pass
-    return results or None
-
-# ============ ЧАТЫ ============
+# ----- Чат (Supabase) -----
 def create_chat(uid, title="Новый чат"):
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("INSERT INTO chats_web(user_id,title,created_at) VALUES(%s,%s,%s) RETURNING id", (str(uid), title, now_iso()))
-    cid = cur.fetchone()[0]; conn.commit(); cur.close(); conn.close(); return cid
+    try:
+        r = _sb.table('chats_web').insert({'user_id': str(uid), 'title': title, 'created_at': now_iso(), 'pinned': 0}).execute()
+        return r.data[0]['id']
+    except Exception: return None
 def get_chats(uid):
-    conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM chats_web WHERE user_id=%s ORDER BY pinned DESC,created_at DESC", (str(uid),))
-    rows = cur.fetchall(); cur.close(); conn.close(); return [dict(r) for r in rows]
+    try:
+        r = _sb.table('chats_web').select('*').eq('user_id', str(uid)).order('created_at', desc=True).execute()
+        return r.data or []
+    except Exception: return []
 def add_msg(cid, role, content, image=None):
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("INSERT INTO messages_web(chat_id,role,content,image,created_at) VALUES(%s,%s,%s,%s,%s)", (int(cid), role, content, image, now_iso()))
-    conn.commit(); cur.close(); conn.close()
+    try:
+        _sb.table('messages_web').insert({'chat_id': int(cid), 'role': role, 'content': content or '', 'image': image, 'created_at': now_iso()}).execute()
+    except Exception: pass
 def get_msgs(cid):
-    conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM messages_web WHERE chat_id=%s ORDER BY id", (int(cid),))
-    rows = cur.fetchall(); cur.close(); conn.close(); return [dict(r) for r in rows]
+    try:
+        r = _sb.table('messages_web').select('*').eq('chat_id', int(cid)).order('id').execute()
+        return r.data or []
+    except Exception: return []
 def hist(cid):
     m = get_msgs(cid)
-    if len(m) <= MAX_HISTORY: return m if m else []
-    return m[:6] + m[-MAX_HISTORY+6:] if len(m) > 6 else m
+    if len(m) <= MAX_HISTORY: return m or []
+    return (m[:6] + m[-MAX_HISTORY+6:]) if len(m) > 6 else m
 def set_title(cid, t):
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("UPDATE chats_web SET title=%s WHERE id=%s", (t[:50], int(cid)))
-    conn.commit(); cur.close(); conn.close()
+    try: _sb.table('chats_web').update({'title': t[:50]}).eq('id', int(cid)).execute()
+    except Exception: pass
 def del_chat(uid, cid):
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("DELETE FROM messages_web WHERE chat_id=%s", (int(cid),))
-    cur.execute("DELETE FROM chats_web WHERE id=%s AND user_id=%s", (int(cid), str(uid)))
-    conn.commit(); cur.close(); conn.close()
+    try:
+        _sb.table('messages_web').delete().eq('chat_id', int(cid)).execute()
+        _sb.table('chats_web').delete().eq('id', int(cid)).eq('user_id', str(uid)).execute()
+    except Exception: pass
 def pin_chat(cid):
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("UPDATE chats_web SET pinned=CASE WHEN pinned=1 THEN 0 ELSE 1 END WHERE id=%s", (int(cid),))
-    conn.commit(); cur.close(); conn.close()
+    try:
+        r = _sb.table('chats_web').select('pinned').eq('id', int(cid)).execute()
+        v = 0 if (r.data and r.data[0].get('pinned')) else 1
+        _sb.table('chats_web').update({'pinned': v}).eq('id', int(cid)).execute()
+    except Exception: pass
 
-# ============ НЕЙРОСЕТЬ ============
+# ===== НЕЙРОСЕТЬ =====
 tok = None; tok_t = 0
 def get_tok():
     global tok, tok_t
-    if tok and time.time() - tok_t < 180: return tok
+    if tok and time.time()-tok_t < 180: return tok
     for _ in range(3):
         try:
             r = requests.post("https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
-                headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json",
-                         "RqUID": str(_uuid.uuid4()), "Authorization": "Basic " + GIGACHAT_AUTH_KEY},
+                headers={"Content-Type":"application/x-www-form-urlencoded","Accept":"application/json",
+                         "RqUID": str(_uuid.uuid4()), "Authorization":"Basic "+GIGACHAT_AUTH_KEY},
                 data="scope=GIGACHAT_API_PERS", timeout=10, verify=False)
             if r.status_code == 200:
                 j = r.json()
@@ -349,15 +253,15 @@ def get_tok():
     tok = None
     return None
 
-def giga(hist, sysp, max_tok=2000):
+def giga(hlist, sysp, max_tok=2000):
     try:
         t = get_tok()
         if not t: return None
-        msgs = [{"role": "system", "content": sysp[:3000]}] + \
-               [{"role": h.get("role", "user"), "content": (h.get("content") or "")[:800]} for h in hist[-12:] if h.get("role") in ("user", "assistant")]
+        msgs = [{"role":"system","content":sysp[:3000]}] + \
+               [{"role":h.get("role","user"),"content":(h.get("content") or "")[:800]} for h in hlist[-12:] if h.get("role") in ("user","assistant")]
         r = requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
-            headers={"Authorization": "Bearer " + t, "Content-Type": "application/json", "Accept": "application/json"},
-            json={"model": "GigaChat-Pro", "messages": msgs, "temperature": 0.85, "max_tokens": max_tok},
+            headers={"Authorization":"Bearer "+t,"Content-Type":"application/json","Accept":"application/json"},
+            json={"model":"GigaChat-Pro","messages":msgs,"temperature":0.85,"max_tokens":max_tok},
             timeout=GIGA_TIMEOUT, verify=False)
         if r.status_code == 200:
             try: return r.json()["choices"][0]["message"]["content"]
@@ -368,10 +272,10 @@ def giga(hist, sysp, max_tok=2000):
 def ygpt(text, sysp):
     try:
         r = requests.post("https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
-            headers={"Authorization": "Api-Key " + YANDEX_API_KEY, "Content-Type": "application/json"},
-            json={"modelUri": "gpt://" + FOLDER_ID + "/yandexgpt/latest",
-                  "completionOptions": {"temperature": 0.7, "maxTokens": 700, "stream": False},
-                  "messages": [{"role": "system", "text": sysp[:1500]}, {"role": "user", "text": text}]},
+            headers={"Authorization":"Api-Key "+YANDEX_API_KEY,"Content-Type":"application/json"},
+            json={"modelUri":"gpt://"+FOLDER_ID+"/yandexgpt/latest",
+                  "completionOptions":{"temperature":0.7,"maxTokens":700,"stream":False},
+                  "messages":[{"role":"system","text":sysp[:1500]},{"role":"user","text":text}]},
             timeout=YGPT_TIMEOUT)
         if r.status_code == 200:
             try: return r.json()["result"]["alternatives"][0]["message"]["text"]
@@ -379,39 +283,33 @@ def ygpt(text, sysp):
     except Exception: pass
     return None
 
-SUPER = """ТЫ — AWESOME AI, самый мощный живой ИИ-помощник нового поколения.
-📍 Ты находишься в РОССИИ, городе МОСКВА. Сегодня: {d}, время: {t} (московское).
+SUPER = """ТЫ — AWESOME AI, самый мощный живой ИИ-помощник нового поколения. Уровень ChatGPT.
+📍 Ты в РОССИИ, город МОСКВА. Сегодня: {d}, время: {t} (московское).
 {memory}
-ТВОЙ СТИЛЬ: отвечай как живой эксперт — живо, тепло, с юмором. Давай конкретику, цифры, примеры.
-ФОРМАТ: разделяй на разделы **1. Название**. Важное выделяй **жирным**. Используй эмодзи (🔥🧠💡⚡🚀💎✨).
-ПРАВИЛА: если есть свежие данные из поиска ниже — ОБЯЗАТЕЛЬНО опирайся на них, дай ссылки. Никогда не выдумывай актуальные события, если их нет в поиске — так и скажи.
-Ты полноценный собеседник — поддерживай разговор, задавай встречные вопросы, запоминай детали.💎"""
+СТИЛЬ: отвечай как живой эксперт — живо, тепло, с юмором. Давай конкретику, цифры, примеры.
+ФОРМАТ: разделяй на разделы **1. Название**. Важное выделяй **жирным**. Используй эмодзи.
+ПРАВИЛА: если есть свежие данные из поиска ниже — опирайся на них. Никогда не выдумывай актуальные события.
+Ты полноценный собеседник — поддерживай разговор, задавай встречные вопросы, запоминай детали."""
 
 def smart_answer(uid, text, history, img=None, doc=None):
     mem = get_memory(uid)
     sp = SUPER.format(d=gdate(), t=gm().strftime('%H:%M'),
-        memory=("Помнишь о пользователе:\n" + ("\n".join("• " + f for f in mem))) if mem else "")
-    if eff_status(uid)['premium']: sp += "\n💎 Пользователь Premium — дай максимум глубины."
+        memory=("Помнишь о пользователе:\n"+("\n".join("• "+f for f in mem))) if mem else "")
+    if eff_status(uid)['premium']: sp += "\n💎 Пользователь Premium — максимум глубины."
     if img: sp += f"\n📸 Изображение: {img}"
     if doc: sp += f"\n📄 Документ: {doc[:3000]}"
     tl = (text or "").lower().strip()
-    needs_news = any(k in tl for k in ["новост","последн","сейчас","свеж","актуальн","сегодня","открылась","запусти","новый проект","что нового","расскажи про"]) \
-        or re.search(r'\b(20\d\d|вчера|сегодня)\b', tl)
-    if needs_news:
-        res = web_search(text)
-        if res:
-            sp += "\n📰 АКТУАЛЬНЫЕ ДАННЫЕ ИЗ ИНТЕРНЕТА (только это считай правдой про недавние события):\n" + "\n".join(f"- {t}: {u}" for t, u, *_ in res[:5])
     try: extract_facts(uid, text)
     except Exception: pass
-    full = history + [{"role": "user", "content": text or "Опиши"}]
+    full = history + [{"role":"user","content":text or "Опиши"}]
     a = giga(full, sp)
     if a and len(a) > 4: return a
     b = ygpt(text, sp)
     if b and len(b) > 4: return b
-    # ---- фолбэки / 40+ функций ----
+    # фолбэки
     if img: return f"📸 {img}"
     if any(w in tl for w in ["привет","здравств","хай","ку"]): return "👋 Привет! Рад тебя видеть. Чем займёмся сегодня?"
-    if "время" in tl and ("сейчас" in tl or "сколько" in tl or "московск" in tl or "час" in tl):
+    if "время" in tl and ("сейчас" in tl or "сколько" in tl or "час" in tl):
         return f"🕒 Сейчас **{gm().strftime('%H:%M:%S')}** (Москва), дата: **{gdate()}**."
     if "дата" in tl or "какое сегодня число" in tl:
         return f"📅 Сегодня **{gdate()}**, {['понедельник','вторник','среда','четверг','пятница','суббота','воскресенье'][gm().weekday()]}."
@@ -420,47 +318,37 @@ def smart_answer(uid, text, history, img=None, doc=None):
         if "англ" in tl: target = 'en'
         elif "немец" in tl: target = 'de'
         elif "франц" in tl: target = 'fr'
-        txt = re.sub(r'(переведи|на английский|на русский|на немецкий|на французский|пожалуйста|на .*?)', '', tl, flags=re.I).strip()
-        return "🌍 " + translate(txt[:500], target) if txt else "Напиши что перевести."
+        txt = re.sub(r'(переведи|на английский|на русский|на немецкий|на французский|пожалуйста|на .*?)','',tl,flags=re.I).strip()
+        return "🌍 "+translate(txt[:500],target) if txt else "Напиши что перевести."
     if "анекдот" in tl or "шутк" in tl or "рассмеши" in tl:
-        jokes = ["— Почему программист перепутал Хэллоуин и Рождество? — Потому что Oct 31 == Dec 25 😄","— Админ заходит в бар, а там все буферы переполнены 😅","— Что сказал один сервер другому? — Ты сегодня в сети? 📶"]
-        return "😂 " + random.choice(jokes)
-    if "комплимент" in tl or "похвали" in tl or "что во мне хорош" in tl:
-        return "✨ Ты потрясающий! У тебя отличный вкус (ты же выбрал AWESOME AI 😉), ты любопытный и явно умный собеседник. Таких людей приятно встречать!"
-    if "план" in tl or "распиши" in tl:
-        return "📋 **Пошаговый план**\n\n1. Сформулируй цель 🎯\n2. Разбей на задачи 🔨\n3. Выдели сроки ⏰\n4. Действуй! 🚀\n\nНапиши тему — и я сделаю подробный план по ней."
-    if "режим" in tl or "стань" in tl or "ты теперь" in tl:
-        return "⚡ **Доступные режимы** — просто скажи:\n• «Будь моим юристом» ⚖️\n• «Будь моим психологом» 🧠\n• «Будь моим учителем» 📚\n• «Будь моим кодером» 💻\n• «Будь моим маркетологом» 📈\n• «Расскажи сказку» 🧚\n\nВыбери роль — и я отвечу в ней!"
-    if any(k in tl for k in ['биткоин','btc','крипта','эфир']):
+        jokes=["— Почему программист перепутал Хэллоуин и Рождество? — Oct 31 == Dec 25 😄","— Админ заходит в бар, а там все буферы переполнены 😅","— Что сказал один сервер другому? — Ты сегодня в сети? 📶"]
+        return "😂 "+random.choice(jokes)
+    if "комплимент" in tl or "похвали" in tl:
+        return "✨ Ты потрясающий! У тебя отличный вкус, ты любопытный и явно умный собеседник. Таких людей приятно встречать!"
+    if "крипт" in tl or "биткоин" in tl or "эфир" in tl:
         c = crypto(); return c if c else "🪙 Не удалось получить цену."
-    if any(k in tl for k in ['курс','доллар','евро','валют']):
+    if "курс" in tl or "доллар" in tl or "евро" in tl or "валют" in tl:
         c = currency(); return c if c else "💵 Не удалось получить курс."
-    if "рецепт" in tl or "приготов" in tl:
-        return "🍳 Подскажи что хочешь приготовить (например: «рецепт омлета»), и я дам подробный рецепт с ингредиентами и шагами!"
-    if "фильм" in tl and ("посоветуй" in tl or "подбери" in tl or "рекоменд" in tl):
-        return "🎬 Отличный выбор! Напиши жанр (фантастика, комедия, драма, детектив, ужасы), и я подберу топ фильмов под настроение."
-    if "книг" in tl and ("посоветуй" in tl or "подбери" in tl or "рекоменд" in tl):
-        return "📚 Напиши любимый жанр — и я посоветую книги, которые точно тебе зайдут!"
-    if "выучи" in tl or "запомни" in tl:
-        fact = re.sub(r'(запомни|выучи|что)\s*', '', tl).strip()[:500]
-        if len(fact) > 3:
-            remember(uid, fact)
-            return "🧠 Запомнил: «" + fact + "». Расскажу при случае!"
-        return "🧠 Что именно запомнить?"
-    if "что ты помнишь" in tl or "память" in tl:
-        mem = get_memory(uid)
-        return "🧠 **Что я помню о тебе:**\n" + ("\n".join("• " + f for f in mem) if mem else "Пока ничего. Скажи «запомни...», и я сохраню!")
-    if "кто ты" in tl or "что ты умеешь" in tl:
-        return "Я **AWESOME AI** — самый мощный живой помощник ✨\n\nУмею:\n**1. Общаться** 🗣\n**2. Искать в интернете** 🌐\n**3. Помнить о тебе** 🧠\n**4. Отвечать на свежие новости** 📰\n**5. Считать** 🧮\n**6. Рисовать** 🎨\n**7. Погода/валюты/крипта** 🌤💵🪙\n**8. Переводить** 🌍\n**9. Шутить** 😂\n**10. Давать планы** 📋\n\nЧто попробуем?"
-    if re.search(r'\d+\s*[\+\-\*\/]\s*\d+', tl):
-        try:
-            res = eval(re.sub(r'[^0-9+\-*/(). ]', '', tl)); return f"🧮 Результат: **{res}**"
-        except: return "🧮 Не понял выражение. Например: 2+2*3"
     if "погода" in tl:
         m = re.search(r'(в|в городе)\s+([а-яА-Яa-zA-Z\- ]+)', tl)
         if m:
             w = weather(m.group(2).strip()); return w if w else "🌤 Напиши: погода в [город]"
         return "🌤 Напиши: погода в [город]"
+    if "запомни" in tl or "выучи" in tl:
+        fact = re.sub(r'(запомни|выучи|что)\s*','',tl).strip()[:500]
+        if len(fact) > 3:
+            remember(uid, fact); return "🧠 Запомнил: «"+fact+"». Расскажу при случае!"
+        return "🧠 Что именно запомнить?"
+    if "что ты помнишь" in tl or "память" in tl:
+        return "🧠 **Что я помню о тебе:**\n"+("\n".join("• "+f for f in mem) if mem else "Пока ничего. Скажи «запомни...», и я сохраню!")
+    if "кто ты" in tl or "что ты умеешь" in tl:
+        return "Я **AWESOME AI** — живой помощник ✨\n\n**1.** Общаюсь 🗣\n**2.** Ищу в интернете 🌐\n**3.** Помню о тебе 🧠\n**4.** Считаю 🧮\n**5.** Рисую 🎨\n**6.** Погода/валюты/крипта 🌤💵🪙\n**7.** Перевожу 🌍\n**8.** Шучу 😂\n\nЧто попробуем?"
+    if re.search(r'\d+\s*[\+\-\*\/]\s*\d+', tl):
+        try:
+            res = eval(re.sub(r'[^0-9+\-*/(). ]','',tl)); return f"🧮 Результат: **{res}**"
+        except: return "🧮 Не понял выражение."
+    if "режим" in tl or "стань" in tl:
+        return "⚡ **Режимы** — просто скажи:\n• «Будь моим юристом» ⚖️\n• «Будь моим психологом» 🧠\n• «Будь моим учителем» 📚\n• «Будь моим кодером» 💻\n• «Будь моим маркетологом» 📈"
     return "🤖 Обрабатываю... Напиши чуть подробнее, и я дам полный ответ!"
 
 def describe_img(b64):
@@ -468,30 +356,27 @@ def describe_img(b64):
         t = get_tok()
         if not t: return "📸 Изображение"
         r = requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
-            headers={"Authorization": "Bearer " + t, "Content-Type": "application/json", "Accept": "application/json"},
-            json={"model": "GigaChat-Pro", "messages": [{"role": "system", "content": "Опиши изображение подробно на русском, живо."},
-                {"role": "user", "content": [{"type": "text", "text": "Что на изображении?"}, {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + b64}}]}], "temperature": 0.5, "max_tokens": 400}, timeout=GIGA_TIMEOUT, verify=False)
+            headers={"Authorization":"Bearer "+t,"Content-Type":"application/json","Accept":"application/json"},
+            json={"model":"GigaChat-Pro","messages":[{"role":"system","content":"Опиши изображение подробно на русском, живо."},
+                {"role":"user","content":[{"type":"text","text":"Что на изображении?"},{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,"+b64}}]}],"temperature":0.5,"max_tokens":400},timeout=GIGA_TIMEOUT,verify=False)
         if r.status_code == 200: return r.json()["choices"][0]["message"]["content"]
     except Exception: pass
     return "📸 Изображение"
-
 def gen_img(prompt):
     try:
         c = prompt
-        for w in ['нарисуй','сгенерируй','покажи','картинку','изображение','нарисуй мне']: c = c.replace(w, '').strip()
+        for w in ['нарисуй','сгенерируй','покажи','картинку','изображение','нарисуй мне']: c = c.replace(w,'').strip()
         if not c: c = prompt
-        r = requests.get(f"https://image.pollinations.ai/prompt/{urllib.parse.quote(c)}?width=1024&height=1024&nologo=true", headers={"User-Agent": "Mozilla/5.0"}, timeout=25)
+        r = requests.get(f"https://image.pollinations.ai/prompt/{urllib.parse.quote(c)}?width=1024&height=1024&nologo=true", headers={"User-Agent":"Mozilla/5.0"}, timeout=25)
         if r.status_code == 200 and len(r.content) > 1000: return base64.b64encode(r.content).decode()
     except Exception: pass
     return None
-
 def translate(text, target='ru'):
     try:
-        r = requests.post("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=" + target + "&dt=t&q=" + urllib.parse.quote(text[:5000]), timeout=8)
+        r = requests.post("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl="+target+"&dt=t&q="+urllib.parse.quote(text[:5000]), timeout=8)
         if r.status_code == 200: return "".join(x[0] for x in r.json()[0] if x[0])
     except Exception: pass
     return text
-
 def weather(city):
     try:
         r = requests.get(f"https://api.openweathermap.org/data/2.5/weather?q={urllib.parse.quote(city)}&appid=4c8f5c0b8a9f2c5d6e7f8g9h0i1j2k3l&units=metric&lang=ru", timeout=SEARCH_TIMEOUT)
@@ -499,20 +384,17 @@ def weather(city):
             d = r.json(); return f"🌤 **{city}**: {round(d['main']['temp'])}°C, {d['weather'][0]['description']}\n💨 Ветер: {d['wind']['speed']} м/с\n💧 Влажность: {d['main']['humidity']}%"
     except Exception: pass
     return None
-
 def currency():
     try:
         r = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=SEARCH_TIMEOUT)
-        rates = r.json().get('rates', {}); usd = rates.get('RUB', '?'); eur = usd / rates.get('EUR', 1) if rates.get('EUR') else '?'
+        rates = r.json().get('rates',{}); usd = rates.get('RUB','?'); eur = usd/rates.get('EUR',1) if rates.get('EUR') else '?'
         return f"💵 **Курс валют:**\nUSD: **{round(usd,2)}₽**\nEUR: **{round(eur,2)}₽**"
     except Exception: return None
-
 def crypto():
     try:
         r = requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd", timeout=SEARCH_TIMEOUT)
         d = r.json(); return f"🪙 **Криптовалюта:**\nBTC: **${d.get('bitcoin',{}).get('usd','?')}**\nETH: **${d.get('ethereum',{}).get('usd','?')}**"
     except Exception: return None
-
 def read_pdf(b64):
     try:
         import fitz
@@ -520,605 +402,470 @@ def read_pdf(b64):
         return "".join(page.get_text() for page in doc)[:5000] or "PDF без текста"
     except Exception: return "PDF загружен"
 
-# ============ API ============
+# ===== API =====
 @app.route('/')
 def index(): return render_template_string(INDEX_HTML)
 
+@app.route('/favicon.ico')
+def favicon():
+    svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="24" fill="#10a37f"/><text x="50" y="68" font-size="52" text-anchor="middle" fill="#fff" font-family="sans-serif" font-weight="bold">A</text></svg>'
+    return app.response_class(svg, mimetype='image/svg+xml')
+
 @app.route('/api/register', methods=['POST'])
 def api_register():
-    d = request.json
-    login = str(d.get('login', '')).strip(); name = str(d.get('name', '')).strip(); pw = str(d.get('password', ''))
-    ok, msg = reg_user(login, name, pw)
-    if not ok: return jsonify({'ok': False, 'error': msg})
-    session.permanent = True; session['user_id'] = login; session['name'] = name
-    return jsonify({'ok': True, 'user_id': login, 'name': name})
+    try:
+        d = request.json
+        login = str(d.get('login','')).strip(); name = str(d.get('name','')).strip(); pw = str(d.get('password',''))
+        ok, msg = reg_user(login, name, pw)
+        if not ok: return jsonify({'ok':False,'error':msg})
+        session.permanent=True; session['user_id']=login; session['name']=name
+        return jsonify({'ok':True,'user_id':login,'name':name})
+    except Exception as e:
+        return jsonify({'ok':False,'error':'Ошибка регистрации: '+str(e)}), 400
 
 @app.route('/api/login', methods=['POST'])
 def api_login():
-    d = request.json
-    login = str(d.get('login', '')).strip(); pw = str(d.get('password', ''))
-    ok, msg = login_user(login, pw)
-    if not ok: return jsonify({'ok': False, 'error': msg})
-    u = get_user_by_login(login)
-    session.permanent = True; session['user_id'] = login; session['name'] = u.get('name') if u else login
-    return jsonify({'ok': True, 'user_id': login, 'name': session['name']})
+    try:
+        d = request.json
+        login = str(d.get('login','')).strip(); pw = str(d.get('password',''))
+        ok, msg = login_user(login, pw)
+        if not ok: return jsonify({'ok':False,'error':msg})
+        u = get_user_by_login(login)
+        session.permanent=True; session['user_id']=login; session['name']=u.get('name') if u else login
+        return jsonify({'ok':True,'user_id':login,'name':session['name']})
+    except Exception as e:
+        return jsonify({'ok':False,'error':'Ошибка входа: '+str(e)}), 400
 
 @app.route('/api/logout', methods=['POST'])
-def api_logout(): session.clear(); return jsonify({'ok': True})
+def api_logout(): session.clear(); return jsonify({'ok':True})
 
 @app.route('/api/me')
 def api_me():
     uid = session.get('user_id')
-    if not uid: return jsonify({'ok': False})
+    if not uid: return jsonify({'ok':False})
     u = get_user(uid)
-    if not u: session.clear(); return jsonify({'ok': False})
-    return jsonify({'ok': True, 'user_id': uid, 'name': session.get('name') or u.get('name'), 'theme': u.get('theme', 'dark')})
+    if not u: session.clear(); return jsonify({'ok':False})
+    return jsonify({'ok':True,'user_id':uid,'name':session.get('name') or u.get('name'),'theme':u.get('theme','light'),'avatar':u.get('avatar','')})
 
 @app.route('/api/status')
 def api_status():
     uid = session.get('user_id')
-    if not uid: return jsonify({'ok': False})
-    s = eff_status(uid)
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT messages_today FROM users WHERE user_id=%s", (str(uid),)); row = cur.fetchone(); cur.close(); conn.close()
-    if s['is_owner']: st = "👑 Владелец"; lim = "♾️"
-    elif s['is_admin']: st = "🛡 Админ"; lim = "♾️"
-    elif s['premium']: st = "💎 Premium"; lim = "♾️"
-    else: st = "🔓 Бесплатный"; lim = f"{max(0, FREE_LIMIT-(row[0] if row else 0))}/{FREE_LIMIT}"
-    return jsonify({'ok': True, 'premium': bool(s['premium']), 'is_admin': bool(s['is_admin']), 'is_owner': bool(s['is_owner']),
-                    'premium_expires': fmt_date(s['premium_expires']) if s['premium'] else None,
-                    'status_text': st, 'limit_text': lim, 'messages_today': row[0] if row else 0, 'free_limit': FREE_LIMIT,
-                    'level': s['level'], 'xp': s['xp']})
+    if not uid: return jsonify({'ok':False})
+    s = eff_status(uid); u = get_user(uid) or {}
+    if s['is_owner']: st="Владелец"; lim="∞"
+    elif s['is_admin']: st="Админ"; lim="∞"
+    elif s['premium']: st="Premium"; lim="∞"
+    else: st="Free"; lim=f"{max(0,FREE_LIMIT-int(u.get('messages_today',0) or 0))}/{FREE_LIMIT}"
+    return jsonify({'ok':True,'premium':bool(s['premium']),'is_admin':bool(s['is_admin']),'is_owner':bool(s['is_owner']),
+                    'premium_expires':fmt_date(s['premium_expires']) if s['premium'] else None,
+                    'status_text':st,'limit_text':lim,'messages_today':int(u.get('messages_today',0) or 0),'free_limit':FREE_LIMIT,
+                    'level':s['level'],'xp':s['xp']})
 
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
     uid = session.get('user_id')
-    if not uid: return jsonify({'ok': False, 'error': 'Авторизуйся'})
-    if not can_send(uid): return jsonify({'ok': False, 'error': 'Лимит! Повысь тариф в админке.'})
-    d = request.json; msg = d.get('message', '').strip(); cid = d.get('chat_id'); img = d.get('image'); doc = d.get('document')
-    if not msg and not img and not doc: return jsonify({'ok': False, 'error': 'Пустое'})
+    if not uid: return jsonify({'ok':False,'error':'Авторизуйся'})
+    if not can_send(uid): return jsonify({'ok':False,'error':'Дневной лимит исчерпан'})
+    d = request.json; msg = d.get('message','').strip(); cid = d.get('chat_id'); img = d.get('image'); doc = d.get('document')
+    if not msg and not img and not doc: return jsonify({'ok':False,'error':'Пустое'})
     if not cid: cid = create_chat(uid)
     h = hist(cid)
-    idesc = None; dtext = None
+    idesc=None; dtext=None
     if img:
         try:
             raw = base64.b64decode(img.split(',')[-1])
             if HAS_PIL:
-                im = Image.open(io.BytesIO(raw)).convert('RGB'); im.thumbnail((700, 700))
-                b = io.BytesIO(); im.save(b, 'JPEG', quality=80); idesc = describe_img(base64.b64encode(b.getvalue()).decode())
-            else: idesc = describe_img(img.split(',')[-1])
-        except Exception: idesc = "📸"
+                im = Image.open(io.BytesIO(raw)).convert('RGB'); im.thumbnail((700,700))
+                b = io.BytesIO(); im.save(b,'JPEG',quality=80); idesc=describe_img(base64.b64encode(b.getvalue()).decode())
+            else: idesc=describe_img(img.split(',')[-1])
+        except Exception: idesc="📸"
     if doc:
-        if doc.get('type') == 'pdf': dtext = read_pdf(doc.get('data', ''))
-        else: dtext = "Документ: " + doc.get('name', '')
-    add_msg(cid, 'user', msg, img)
+        dtext = read_pdf(doc.get('data','')) if doc.get('type')=='pdf' else "Документ: "+doc.get('name','')
+    add_msg(cid,'user',msg,img)
     response = smart_answer(uid, msg, h, idesc, dtext)
     try: incr(uid)
     except Exception: pass
-    add_msg(cid, 'assistant', response)
+    add_msg(cid,'assistant',response)
     try:
-        ms = get_msgs(cid); fu = next((m for m in ms if m['role'] == 'user' and m['content']), None)
+        ms = get_msgs(cid)
+        fu = next((m for m in ms if m['role']=='user' and m.get('content')), None)
         if fu: set_title(cid, fu['content'][:40])
     except Exception: pass
-    return jsonify({'ok': True, 'response': response, 'chat_id': cid})
+    return jsonify({'ok':True,'response':response,'chat_id':cid})
 
 @app.route('/api/chats')
 def api_chats():
     uid = session.get('user_id')
-    if not uid: return jsonify({'ok': False})
+    if not uid: return jsonify({'ok':False})
     chats = get_chats(uid)
     for c in chats: c['messages'] = get_msgs(c['id'])
-    return jsonify({'ok': True, 'chats': chats})
+    return jsonify({'ok':True,'chats':chats})
 
 @app.route('/api/chat/new', methods=['POST'])
 def api_chat_new():
     uid = session.get('user_id')
-    if not uid: return jsonify({'ok': False})
-    return jsonify({'ok': True, 'chat_id': create_chat(uid)})
+    if not uid: return jsonify({'ok':False})
+    return jsonify({'ok':True,'chat_id':create_chat(uid)})
 
 @app.route('/api/chat/delete', methods=['POST'])
 def api_chat_delete():
     uid = session.get('user_id')
-    if not uid: return jsonify({'ok': False})
-    del_chat(uid, request.json.get('chat_id')); return jsonify({'ok': True})
+    if not uid: return jsonify({'ok':False})
+    del_chat(uid, request.json.get('chat_id')); return jsonify({'ok':True})
 
 @app.route('/api/chat/pin', methods=['POST'])
 def api_chat_pin():
     uid = session.get('user_id')
-    if not uid: return jsonify({'ok': False})
-    pin_chat(request.json.get('chat_id')); return jsonify({'ok': True})
+    if not uid: return jsonify({'ok':False})
+    pin_chat(request.json.get('chat_id')); return jsonify({'ok':True})
 
 @app.route('/api/chat/rename', methods=['POST'])
 def api_chat_rename():
     uid = session.get('user_id')
-    if not uid: return jsonify({'ok': False})
-    d = request.json; set_title(d.get('chat_id'), d.get('title', 'Чат')); return jsonify({'ok': True})
+    if not uid: return jsonify({'ok':False})
+    set_title(request.json.get('chat_id'), request.json.get('title','Чат')); return jsonify({'ok':True})
 
 @app.route('/api/search', methods=['POST'])
 def api_search():
     uid = session.get('user_id')
-    if not uid: return jsonify({'ok': False})
-    q = request.json.get('q', '').lower(); chats = get_chats(uid); res = []
-    for c in chats:
+    if not uid: return jsonify({'ok':False})
+    q = request.json.get('q','').lower(); res=[]
+    for c in get_chats(uid):
         for m in c['messages']:
-            if q in str(m.get('content', '')).lower():
-                res.append({'chat_id': c['id'], 'title': c['title'], 'snippet': str(m.get('content', ''))[:80]}); break
-    return jsonify({'ok': True, 'results': res})
+            if q in str(m.get('content','')).lower():
+                res.append({'chat_id':c['id'],'title':c['title'],'snippet':str(m.get('content',''))[:80]}); break
+    return jsonify({'ok':True,'results':res})
 
 @app.route('/api/share', methods=['POST'])
 def api_share():
     uid = session.get('user_id')
-    if not uid: return jsonify({'ok': False})
-    cid = request.json.get('chat_id'); sid = hashlib.md5((str(cid) + now_iso()).encode()).hexdigest()[:10]
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("INSERT INTO shared_chats(id,chat_id,created_at) VALUES(%s,%s,%s)", (sid, int(cid), now_iso()))
-    conn.commit(); cur.close(); conn.close()
-    return jsonify({'ok': True, 'share_id': sid})
+    if not uid: return jsonify({'ok':False})
+    cid = request.json.get('chat_id'); sid = hashlib.md5((str(cid)+now_iso()).encode()).hexdigest()[:10]
+    try: _sb.table('shared_chats').insert({'id':sid,'chat_id':int(cid),'created_at':now_iso()}).execute()
+    except Exception: pass
+    return jsonify({'ok':True,'share_id':sid})
 
 @app.route('/shared/<sid>')
 def shared(sid):
-    conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT chat_id FROM shared_chats WHERE id=%s", (sid,))
-    row = cur.fetchone(); cur.close(); conn.close()
-    if not row: return "Чат не найден", 404
-    msgs = get_msgs(row['chat_id'])
-    return render_template_string("""<html><head><title>Общий чат</title></head><body style="background:#0f1420;color:#e8eaf6;font-family:Segoe UI;padding:20px;max-width:760px;margin:auto"><h2>💬 Общий чат</h2>{{h|safe}}</body></html>""",
-        h="".join(f'<div class="m" style="background:#171d2b;border-radius:12px;padding:12px;margin:10px 0;white-space:pre-wrap">{"Вы" if m["role"]=="user" else "🤖 AWESOME AI"}:<br>' + html.escape(m.get("content") or "") + "</div>" for m in msgs))
+    try:
+        r = _sb.table('shared_chats').select('chat_id').eq('id', sid).execute()
+        if not r.data: return "Чат не найден",404
+        msgs = get_msgs(r.data[0]['chat_id'])
+    except Exception:
+        return "Чат не найден",404
+    return render_template_string("""<html><head><title>Общий чат</title></head><body style="background:#fff;color:#111;font-family:Segoe UI;padding:20px;max-width:760px;margin:auto"><h2>💬 Общий чат</h2>{{h|safe}}</body></html>""",
+        h="".join(f'<div style="background:#f7f7f8;border-radius:12px;padding:12px;margin:10px 0;white-space:pre-wrap">{"Вы" if m["role"]=="user" else "🤖 AWESOME AI"}:<br>'+html.escape(m.get("content") or "")+"</div>" for m in msgs))
 
 @app.route('/api/export', methods=['POST'])
 def api_export():
     uid = session.get('user_id')
-    if not uid: return jsonify({'ok': False})
+    if not uid: return jsonify({'ok':False})
     msgs = get_msgs(request.json.get('chat_id'))
-    txt = "".join(("Вы: " if m['role'] == 'user' else "AWESOME AI: ") + str(m.get('content') or "") + "\n\n" for m in msgs)
+    txt = "".join(("Вы: " if m['role']=='user' else "AWESOME AI: ")+str(m.get('content') or "")+"\n\n" for m in msgs)
     f = io.BytesIO(txt.encode('utf-8'))
     return send_file(f, as_attachment=True, download_name="chat.txt", mimetype="text/plain")
 
 @app.route('/api/translate', methods=['POST'])
 def api_translate():
-    d = request.json; return jsonify({'ok': True, 'translated': translate(d.get('text', ''), d.get('target', 'ru'))})
+    d = request.json; return jsonify({'ok':True,'translated':translate(d.get('text',''),d.get('target','ru'))})
 
 @app.route('/api/draw', methods=['POST'])
 def api_draw():
     uid = session.get('user_id')
-    if not uid: return jsonify({'ok': False, 'error': 'Авторизуйся'})
-    if not can_send(uid): return jsonify({'ok': False, 'error': 'Лимит!'})
-    img = gen_img(request.json.get('prompt', ''))
-    if img: incr(uid); return jsonify({'ok': True, 'image': img})
-    return jsonify({'ok': False, 'error': 'Не удалось'})
+    if not uid: return jsonify({'ok':False,'error':'Авторизуйся'})
+    if not can_send(uid): return jsonify({'ok':False,'error':'Лимит!'})
+    img = gen_img(request.json.get('prompt',''))
+    if img:
+        try: incr(uid)
+        except Exception: pass
+        return jsonify({'ok':True,'image':img})
+    return jsonify({'ok':False,'error':'Не удалось'})
 
 @app.route('/api/profile')
 def api_profile():
     uid = session.get('user_id')
-    if not uid: return jsonify({'ok': False})
+    if not uid: return jsonify({'ok':False})
     u = get_user(uid); s = eff_status(uid)
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT messages_today FROM users WHERE user_id=%s", (str(uid),)); row = cur.fetchone()
-    cur.execute("SELECT total_messages FROM total_stats_web WHERE user_id=%s", (str(uid),)); tot = cur.fetchone()
-    cur.close(); conn.close()
-    return jsonify({'ok': True, 'user_id': uid, 'name': u.get('name'), 'login': u.get('login'), 'theme': u.get('theme', 'dark'),
-                    'avatar': u.get('avatar', ''), 'ref_code': u.get('ref_code'), 'premium': bool(s['premium']),
-                    'is_admin': bool(s['is_admin']), 'is_owner': bool(s['is_owner']), 'level': s['level'], 'xp': s['xp'],
-                    'premium_expires': fmt_date(s['premium_expires']) if s['premium'] else None,
-                    'messages_today': row[0] if row else 0, 'total_messages': tot[0] if tot else 0, 'joined_at': u.get('joined_at')})
+    return jsonify({'ok':True,'user_id':uid,'name':u.get('name'),'login':u.get('login'),'theme':u.get('theme','light'),
+                    'avatar':u.get('avatar',''),'ref_code':u.get('ref_code'),'premium':bool(s['premium']),
+                    'is_admin':bool(s['is_admin']),'is_owner':bool(s['is_owner']),'level':s['level'],'xp':s['xp'],
+                    'premium_expires':fmt_date(s['premium_expires']) if s['premium'] else None,
+                    'messages_today':int(u.get('messages_today',0) or 0),'joined_at':u.get('joined_at')})
 
 @app.route('/api/settings', methods=['POST'])
 def api_settings():
     uid = session.get('user_id')
-    if not uid: return jsonify({'ok': False})
+    if not uid: return jsonify({'ok':False})
     d = request.json
     upd_settings(uid, name=d.get('name'), theme=d.get('theme'), avatar=d.get('avatar'))
-    if d.get('name'): session['name'] = d['name']
-    return jsonify({'ok': True})
+    if d.get('name'): session['name']=d['name']
+    return jsonify({'ok':True})
 
-@app.route('/api/notifications')
-def api_notifications():
-    uid = session.get('user_id')
-    if not uid: return jsonify({'ok': False})
-    conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM notifications WHERE user_id=%s ORDER BY id DESC LIMIT 20", (str(uid),))
-    rows = cur.fetchall(); cur.close(); conn.close()
-    return jsonify({'ok': True, 'items': [dict(r) for r in rows]})
-
-# ============ АДМИНКА ============
+# ===== АДМИНКА =====
 def admin_check():
     uid = session.get('user_id')
     if not uid: return None, False, "Нет авторизации"
-    if not is_owner(uid): return None, False, "Нет доступа"
+    if not eff_status(uid)['is_owner']: return None, False, "Нет доступа"
     return uid, True, ""
 
-UNITS = {'s':'секунд','sec':'секунд','min':'минут','m':'минут','h':'часов','hour':'часов','d':'дней','day':'дней','w':'недель','week':'недель','mo':'месяцев','month':'месяцев','y':'лет','year':'лет'}
+UNITS={'s':'секунд','sec':'секунд','min':'минут','m':'минут','h':'часов','hour':'часов','d':'дней','day':'дней','w':'недель','week':'недель','mo':'месяцев','month':'месяцев','y':'лет','year':'лет'}
 def parse_duration(num, unit):
-    try: n = int(num)
-    except Exception: return None
-    now = gm()
-    if unit in ('s','sec'): return (now + timedelta(seconds=n)).strftime('%Y-%m-%d %H:%M:%S')
-    if unit in ('min','m'): return (now + timedelta(minutes=n)).strftime('%Y-%m-%d %H:%M:%S')
-    if unit in ('h','hour'): return (now + timedelta(hours=n)).strftime('%Y-%m-%d %H:%M:%S')
-    if unit in ('d','day'): return (now + timedelta(days=n)).strftime('%Y-%m-%d %H:%M:%S')
-    if unit in ('w','week'): return (now + timedelta(weeks=n)).strftime('%Y-%m-%d %H:%M:%S')
-    if unit in ('mo','month'): return (now + relativedelta(months=n)).strftime('%Y-%m-%d %H:%M:%S')
-    if unit in ('y','year'): return (now + relativedelta(years=n)).strftime('%Y-%m-%d %H:%M:%S')
+    try: n=int(num)
+    except: return None
+    now=gm()
+    if unit in ('s','sec'): return (now+timedelta(seconds=n)).strftime('%Y-%m-%d %H:%M:%S')
+    if unit in ('min','m'): return (now+timedelta(minutes=n)).strftime('%Y-%m-%d %H:%M:%S')
+    if unit in ('h','hour'): return (now+timedelta(hours=n)).strftime('%Y-%m-%d %H:%M:%S')
+    if unit in ('d','day'): return (now+timedelta(days=n)).strftime('%Y-%m-%d %H:%M:%S')
+    if unit in ('w','week'): return (now+timedelta(weeks=n)).strftime('%Y-%m-%d %H:%M:%S')
+    if unit in ('mo','month'): return (now+relativedelta(months=n)).strftime('%Y-%m-%d %H:%M:%S')
+    if unit in ('y','year'): return (now+relativedelta(years=n)).strftime('%Y-%m-%d %H:%M:%S')
     return None
 
 @app.route('/api/admin/stats')
 def admin_stats():
-    uid, ok, err = admin_check()
-    if not ok: return jsonify({'ok': False, 'error': err})
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM users"); total = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM users WHERE premium=1"); prem = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM users WHERE is_admin=1"); admins = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM chats_web"); chats = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM messages_web"); msgs = cur.fetchone()[0]
-    cur.execute("SELECT user_id,name,premium,is_admin,premium_expires,level,xp FROM users ORDER BY joined_at DESC LIMIT 300")
-    users = cur.fetchall(); cur.close(); conn.close()
-    return jsonify({'ok': True, 'total': total, 'premium': prem, 'admins': admins, 'chats': chats, 'messages': msgs,
-                    'users': [{'id': r[0], 'name': r[1], 'premium': r[2], 'is_admin': r[3], 'expires': r[4], 'level': r[5], 'xp': r[6]} for r in users]})
+    uid,ok,err = admin_check()
+    if not ok: return jsonify({'ok':False,'error':err})
+    try:
+        users = _sb.table('users').select('*').execute().data or []
+        total=len(users)
+        prem=sum(1 for u in users if u.get('premium')==1)
+        admins=sum(1 for u in users if u.get('is_admin')==1)
+    except Exception:
+        users=[]; total=0; prem=0; admins=0
+    return jsonify({'ok':True,'total':total,'premium':prem,'admins':admins,
+                    'users':[{'id':u.get('user_id'),'name':u.get('name'),'premium':u.get('premium'),'is_admin':u.get('is_admin'),'expires':u.get('premium_expires'),'level':u.get('level'),'xp':u.get('xp')} for u in users]})
 
 @app.route('/api/admin/give', methods=['POST'])
 def admin_give():
-    uid, ok, err = admin_check()
-    if not ok: return jsonify({'ok': False, 'error': err})
-    d = request.json; target = str(d.get('user_id', '')).strip(); action = d.get('action')
-    if not target: return jsonify({'ok': False, 'error': 'Укажи ID'})
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT user_id FROM users WHERE user_id=%s", (target,))
-    if not cur.fetchone(): cur.close(); conn.close(); return jsonify({'ok': False, 'error': 'Пользователь не найден'})
-    if action == 'give_prem':
-        exp = parse_duration(d.get('num', 30), d.get('unit', 'd'))
-        if not exp: cur.close(); conn.close(); return jsonify({'ok': False, 'error': 'Неверный срок'})
-        cur.execute("UPDATE users SET premium=1, premium_expires=%s WHERE user_id=%s", (exp, target))
-    elif action == 'take_prem':
-        cur.execute("UPDATE users SET premium=0, premium_expires=NULL WHERE user_id=%s", (target,))
-    elif action == 'give_admin':
-        cur.execute("UPDATE users SET is_admin=1 WHERE user_id=%s", (target,))
-    elif action == 'take_admin':
-        cur.execute("UPDATE users SET is_admin=0 WHERE user_id=%s", (target,))
-    elif action == 'delete_user':
-        cur.execute("DELETE FROM users WHERE user_id=%s", (target,))
-        cur.execute("DELETE FROM total_stats_web WHERE user_id=%s", (target,))
-    elif action == 'reset_pass':
-        newpw = d.get('password', '')
-        if len(newpw) < 3: cur.close(); conn.close(); return jsonify({'ok': False, 'error': 'Пароль мин.3'})
-        cur.execute("UPDATE users SET password=%s WHERE user_id=%s", (hash_pw(newpw), target))
-    elif action == 'set_xp':
-        cur.execute("UPDATE users SET xp=%s WHERE user_id=%s", (int(d.get('value', 0)), target))
-        cur.execute("UPDATE users SET level=1+floor(xp/100) WHERE user_id=%s", (target,))
-    elif action == 'set_theme':
-        cur.execute("UPDATE users SET theme=%s WHERE user_id=%s", (d.get('value', 'dark'), target))
-    conn.commit(); cur.close(); conn.close()
-    log_admin(uid, f"{action} {target}")
-    return jsonify({'ok': True})
+    uid,ok,err = admin_check()
+    if not ok: return jsonify({'ok':False,'error':err})
+    d = request.json; target = str(d.get('user_id','')).strip(); action = d.get('action')
+    if not target: return jsonify({'ok':False,'error':'Укажи ID'})
+    if not get_user(target): return jsonify({'ok':False,'error':'Пользователь не найден'})
+    try:
+        if action=='give_prem':
+            exp = parse_duration(d.get('num',30), d.get('unit','d'))
+            if not exp: return jsonify({'ok':False,'error':'Неверный срок'})
+            _sb.table('users').update({'premium':1,'premium_expires':exp}).eq('user_id',target).execute()
+        elif action=='take_prem':
+            _sb.table('users').update({'premium':0,'premium_expires':None}).eq('user_id',target).execute()
+        elif action=='give_admin':
+            _sb.table('users').update({'is_admin':1}).eq('user_id',target).execute()
+        elif action=='take_admin':
+            _sb.table('users').update({'is_admin':0}).eq('user_id',target).execute()
+        elif action=='delete_user':
+            _sb.table('users').delete().eq('user_id',target).execute()
+        elif action=='reset_pass':
+            newpw = d.get('password','')
+            if len(newpw)<3: return jsonify({'ok':False,'error':'Пароль мин.3'})
+            _sb.table('users').update({'password':hash_pw(newpw)}).eq('user_id',target).execute()
+        elif action=='set_xp':
+            _sb.table('users').update({'xp':int(d.get('value',0)),'level':1+int(d.get('value',0))//100}).eq('user_id',target).execute()
+        elif action=='set_theme':
+            _sb.table('users').update({'theme':d.get('value','light')}).eq('user_id',target).execute()
+    except Exception as e:
+        return jsonify({'ok':False,'error':'Ошибка: '+str(e)})
+    return jsonify({'ok':True})
 
-@app.route('/api/admin/logs')
-def admin_logs():
-    uid, ok, err = admin_check()
-    if not ok: return jsonify({'ok': False, 'error': err})
-    conn = get_db(); cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM admin_log ORDER BY id DESC LIMIT 80")
-    rows = cur.fetchall(); cur.close(); conn.close()
-    return jsonify({'ok': True, 'logs': [dict(r) for r in rows]})
-
-@app.route('/api/admin/reset_db', methods=['POST'])
-def admin_reset_db():
-    uid, ok, err = admin_check()
-    if not ok: return jsonify({'ok': False, 'error': err})
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("DELETE FROM users"); cur.execute("DELETE FROM total_stats_web")
-    conn.commit(); cur.close(); conn.close()
-    log_admin(uid, "Полная очистка аккаунтов")
-    return jsonify({'ok': True})
-
-# ============ HTML: ChatGPT-интерфейс (красивые анимации, всё сворачивается) ============
-INDEX_HTML = r"""<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><title>AWESOME AI</title>
+# ===== HTML: точная копия ChatGPT =====
+INDEX_HTML = r"""<!DOCTYPE html><html lang="ru"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Awesome AI</title>
+<link rel="icon" href="/favicon.ico">
 <style>
-:root{--bg:#0a0f1c;--bg2:#101827;--panel:#141d31;--border:#223052;--accent:#6ea8ff;--accent2:#55e6c1;--text:#e9eefc;--muted:#93a0bd;--danger:#ff7b8a;--success:#5fd0a0;--glow:rgba(110,168,255,.25)}
-[data-theme="light"]{--bg:#eef2fb;--bg2:#ffffff;--panel:#ffffff;--border:#dfe6f3;--accent:#4a72f0;--accent2:#17b38f;--text:#20253a;--muted:#6c7794;--danger:#e05060;--success:#1e9e77}
-*{margin:0;padding:0;box-sizing:border-box;font-family:'Inter','Segoe UI',system-ui,sans-serif}
+:root{--bg:#ffffff;--side:#f9f9f9;--border:#d9d9e3;--text:#0d0d0d;--muted:#6b6b74;--green:#10a37f;--green2:#0e8a6d;--hover:#ececf1;--shadow:rgba(0,0,0,.15)}
+*{margin:0;padding:0;box-sizing:border-box;font-family:'Söhne','Segoe UI',-apple-system,system-ui,sans-serif}
 html,body{height:100%}
-body{background:var(--bg);color:var(--text);height:100vh;overflow:hidden;transition:background .3s;-webkit-font-smoothing:antialiased}
-.bg-anim{position:fixed;inset:0;z-index:0;pointer-events:none;background:radial-gradient(circle at 20% 20%,rgba(110,168,255,.14),transparent 40%),radial-gradient(circle at 80% 30%,rgba(85,230,193,.13),transparent 40%),radial-gradient(circle at 50% 90%,rgba(124,77,255,.12),transparent 45%)}
-.particles{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
-.part{position:absolute;bottom:-10px;border-radius:50%;opacity:0;will-change:transform,opacity;animation:floatUp linear infinite}
-@keyframes floatUp{0%{transform:translateY(0) scale(.6);opacity:0}15%{opacity:.13}85%{opacity:.07}100%{transform:translateY(-108vh) scale(1.2);opacity:0}}
-.app{position:relative;z-index:1;display:flex;height:100vh}
-.sidebar{width:272px;background:linear-gradient(180deg,var(--bg2),var(--panel));border-right:1px solid var(--border);display:flex;flex-direction:column;transition:transform .3s cubic-bezier(.4,0,.2,1);z-index:60;box-shadow:2px 0 18px rgba(0,0,0,.18)}
-.sidebar.collapsed{transform:translateX(-100%)}
-.sidebar-header{height:58px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--border);flex-shrink:0}
-.logo{width:40px;height:40px;border-radius:13px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:21px;flex-shrink:0;box-shadow:0 3px 12px var(--glow)}
-.brand{font-weight:800;font-size:16px;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;flex:1;white-space:nowrap;overflow:hidden}
-.side-toggle,.mobile-toggle{background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;padding:6px;transition:transform .18s,color .18s;flex-shrink:0}
-.side-toggle:hover,.mobile-toggle:hover{color:var(--accent);transform:rotate(180deg) scale(1.12)}
-.new-chat{margin:13px 14px;padding:12px;background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;border-radius:13px;color:#fff;font-weight:700;cursor:pointer;font-size:14px;transition:transform .14s,box-shadow .2s;flex-shrink:0}
-.new-chat:hover{box-shadow:0 6px 20px var(--glow);transform:translateY(-1px)}
-.new-chat:active{transform:scale(.97)}
-.chat-list{flex:1;overflow-y:auto;padding:0 8px}
-.chat-item{padding:11px 12px;border-radius:11px;cursor:pointer;margin-bottom:3px;font-size:13px;display:flex;align-items:center;gap:8px;transition:background .18s,transform .12s}
-.chat-item:hover{background:var(--bg2)}
-.chat-item.active{background:var(--bg2);border:1px solid var(--border)}
+body{background:var(--bg);color:var(--text);overflow:hidden;-webkit-font-smoothing:antialiased}
+.app{display:flex;height:100vh}
+/* ---- Сайдбар как у ChatGPT ---- */
+.sidebar{width:260px;background:var(--side);display:flex;flex-direction:column;border-right:1px solid var(--border);transition:transform .28s cubic-bezier(.4,0,.2,1);z-index:60}
+.sidebar.closed{transform:translateX(-100%);width:0;min-width:0;border:none}
+.new-chat{margin:10px;padding:11px 13px;background:#fff;border:1px solid var(--border);border-radius:8px;color:var(--text);cursor:pointer;font-size:13.5px;display:flex;align-items:center;gap:8px;transition:background .15s,box-shadow .15s}
+.new-chat:hover{background:var(--hover);box-shadow:0 1px 3px var(--shadow)}
+.chat-list{flex:1;overflow-y:auto;padding:4px 8px}
+.chat-item{padding:10px 12px;border-radius:8px;cursor:pointer;margin-bottom:2px;font-size:13.5px;display:flex;align-items:center;gap:9px;transition:background .12s}
+.chat-item:hover{background:#fff}
+.chat-item.active{background:#fff;border:1px solid var(--border)}
 .chat-item .t{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.chat-item .del{opacity:0;background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;transition:opacity .15s}
+.chat-item .del{opacity:0;background:none;border:none;color:var(--muted);cursor:pointer;font-size:13px}
 .chat-item:hover .del{opacity:1}
-.sidebar-footer{padding:11px 12px;border-top:1px solid var(--border);flex-shrink:0}
-.user-box{display:flex;align-items:center;gap:9px;padding:9px;background:var(--bg2);border:1px solid var(--border);border-radius:14px}
-.avatar{width:37px;height:37px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;flex-shrink:0;color:#fff}
-.user-info{flex:1;min-width:0}
-.user-name{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.user-status{font-size:11px;color:var(--accent)}
-.user-actions{display:flex;gap:2px}
-.mini-btn{background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:4px;transition:color .15s,transform .15s}
-.mini-btn:hover{color:var(--accent);transform:scale(1.15)}
-.main{flex:1;display:flex;flex-direction:column;min-width:0}
-.main-header{height:58px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--border);background:rgba(16,24,39,.45);flex-shrink:0}
-.main-header .title{flex:1;text-align:center;font-weight:600;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.header-spacer{width:30px}
-.messages{flex:1;overflow-y:auto;padding:20px;scroll-behavior:smooth}
-.welcome{max-width:760px;margin:0 auto;text-align:center;padding-top:6vh;animation:fadeUp .5s ease}
-@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
-.welcome h1{font-size:clamp(28px,5vw,44px);margin-bottom:10px;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
-.welcome p{color:var(--muted);margin-bottom:26px;font-size:16px}
-.suggestion-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:11px;max-width:660px;margin:0 auto}
-.sugg{background:linear-gradient(160deg,var(--panel),var(--bg2));border:1px solid var(--border);border-radius:16px;padding:15px;cursor:pointer;transition:transform .18s,border-color .18s,box-shadow .18s;font-size:13px;text-align:left}
-.sugg:hover{transform:translateY(-4px);border-color:var(--accent);box-shadow:0 8px 22px var(--glow)}
-.sugg:active{transform:scale(.95)}
-.sugg .ic{font-size:23px;margin-bottom:8px;display:block}
-.msg{max-width:780px;margin:0 auto 16px;display:flex;gap:11px;animation:fadeUp .3s ease;position:relative}
-.msg.user{flex-direction:row-reverse}
-.msg .bubble{padding:13px 17px;border-radius:18px;font-size:15px;line-height:1.55;max-width:84%;white-space:pre-wrap;word-break:break-word}
-.msg.user .bubble{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-top-right-radius:5px;box-shadow:0 4px 16px var(--glow)}
-.msg.ai .bubble{background:linear-gradient(160deg,var(--panel),var(--bg2));border:1px solid var(--border);border-top-left-radius:5px}
-.msg .bubble b{color:var(--accent)}
-.msg .bubble .h{display:block;font-weight:800;color:var(--accent);font-size:15px;margin:9px 0 4px;padding-top:7px;border-top:1px solid var(--border)}
-.msg .bubble .h:first-child{border:none;margin-top:0;padding-top:0}
-.msg .bubble img.a{max-width:220px;border-radius:11px;margin-top:8px;display:block}
-.msg .bubble img.g{max-width:100%;border-radius:11px;margin-top:8px}
-.msg-actions{position:absolute;top:7px;right:7px;display:flex;gap:3px;opacity:0;transition:opacity .18s}
-.msg:hover .msg-actions{opacity:1}
-.msg-actions button{background:var(--bg2);border:1px solid var(--border);color:var(--muted);border-radius:8px;cursor:pointer;font-size:12px;padding:3px 8px;transition:color .15s}
-.msg-actions button:hover{color:var(--accent)}
-.typing-dots{display:inline-flex;gap:5px;padding:8px 2px}
-.typing-dots span{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:bo 1.1s infinite}
-.typing-dots span:nth-child(2){animation-delay:.2s}.typing-dots span:nth-child(3){animation-delay:.4s}
-@keyframes bo{0%,100%{transform:translateY(0);opacity:.4}50%{transform:translateY(-6px);opacity:1}}
-.input-area{padding:13px;border-top:1px solid var(--border);background:var(--bg);flex-shrink:0}
-.attach-preview{max-width:780px;margin:0 auto 8px;display:none;gap:8px;align-items:center;background:var(--bg2);border:1px solid var(--border);border-radius:13px;padding:7px;animation:fadeUp .18s ease}
-.attach-preview img{width:48px;height:48px;object-fit:cover;border-radius:7px}
-.attach-preview .an{flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.attach-preview .rm{background:none;border:none;color:var(--danger);cursor:pointer;font-size:17px}
-.input-wrap{max-width:780px;margin:0 auto;display:flex;align-items:flex-end;gap:5px;background:var(--bg2);border:1px solid var(--border);border-radius:20px;padding:7px;transition:border-color .2s,box-shadow .2s}
-.input-wrap:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--glow)}
-textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:15px;resize:none;max-height:130px;padding:7px 4px}
-.icon-btn{width:37px;height:37px;border-radius:12px;background:none;border:none;color:var(--muted);font-size:16px;cursor:pointer;flex-shrink:0;transition:color .15s,transform .15s}
-.icon-btn:hover{color:var(--accent);transform:scale(1.1)}
-.send-btn{width:43px;height:43px;border-radius:14px;background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;color:#fff;font-size:17px;cursor:pointer;flex-shrink:0;transition:transform .15s,box-shadow .2s}
-.send-btn:hover{transform:scale(1.08);box-shadow:0 4px 14px var(--glow)}
-.send-btn:disabled{opacity:.4;cursor:not-allowed;transform:none}
-.toolbar{max-width:780px;margin:10px auto 0;display:flex;gap:7px;flex-wrap:wrap;justify-content:center}
-.tool-btn{background:var(--panel);border:1px solid var(--border);color:var(--muted);border-radius:10px;padding:6px 13px;font-size:12px;cursor:pointer;transition:color .15s,border-color .15s,transform .15s}
-.tool-btn:hover{color:var(--text);border-color:var(--accent);transform:translateY(-1px)}
-.overlay{position:fixed;inset:0;background:rgba(8,12,24,.75);z-index:100;display:flex;align-items:center;justify-content:center;padding:16px;opacity:0;visibility:hidden;transition:opacity .25s,visibility .25s}
+.side-foot{padding:8px;border-top:1px solid var(--border)}
+.side-btn{display:flex;align-items:center;gap:9px;width:100%;padding:9px 10px;border:none;background:none;color:var(--text);cursor:pointer;font-size:13.5px;border-radius:8px;transition:background .12s;text-align:left}
+.side-btn:hover{background:#fff}
+.side-btn .ic{width:28px;height:28px;border-radius:6px;background:var(--green);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:14px;flex-shrink:0;overflow:hidden}
+.side-btn .ic img{width:100%;height:100%;object-fit:cover}
+/* ---- Главная ---- */
+.main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
+.topbar{height:48px;display:flex;align-items:center;gap:8px;padding:0 16px;border-bottom:1px solid var(--border);flex-shrink:0}
+.burger{background:none;border:none;color:var(--text);font-size:19px;cursor:pointer;padding:6px;border-radius:6px;transition:background .12s}
+.burger:hover{background:var(--hover)}
+.topbar .ct{flex:1;text-align:center;font-size:14px;font-weight:500}
+.topbar .rt{color:var(--muted);font-size:13px}
+.messages{flex:1;overflow-y:auto}
+.welcome{max-width:760px;margin:0 auto;padding:9vh 24px 24px;text-align:center;animation:fadeUp .5s ease}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+.welcome h1{font-size:clamp(26px,5vw,38px);font-weight:600;margin-bottom:10px;color:#111}
+.welcome p{color:var(--muted);font-size:16px;margin-bottom:28px}
+.sugg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;max-width:680px;margin:0 auto}
+.sugg{border:1px solid var(--border);border-radius:12px;padding:15px;cursor:pointer;font-size:13px;color:var(--muted);text-align:left;background:#fff;transition:background .15s,box-shadow .15s}
+.sugg:hover{background:var(--hover);box-shadow:0 1px 4px var(--shadow)}
+.sugg:active{transform:scale(.98)}
+.msgrow{display:flex;gap:14px;padding:18px 22px;border-bottom:1px solid var(--border);animation:fadeUp .25s ease}
+.msgrow.user{background:var(--bg)}
+.msgrow.ai{background:#f7f7f8}
+.msgrow .mb{max-width:780px;width:100%;margin:0 auto;font-size:15.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+.msgrow .mb b{font-weight:600}
+.msgrow .mb .h{display:block;font-weight:600;font-size:17px;margin:16px 0 5px}
+.msgrow .mb .h:first-child{margin-top:0}
+.msgrow .ma{width:30px;height:30px;border-radius:6px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600}
+.msgrow.user .ma{background:var(--green);color:#fff}
+.typing span{display:inline-block;width:7px;height:7px;border-radius:50%;background:#999;margin-right:4px;animation:blink 1.2s infinite}
+.typing span:nth-child(2){animation-delay:.2s}.typing span:nth-child(3){animation-delay:.4s}
+@keyframes blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
+.inputarea{padding:12px 22px;background:var(--bg);flex-shrink:0}
+.inputwrap{max-width:780px;margin:0 auto;display:flex;align-items:flex-end;gap:6px;background:#fff;border:1px solid var(--border);border-radius:24px;padding:9px 10px;transition:box-shadow .2s}
+.inputwrap:focus-within{box-shadow:0 0 0 1px var(--green)}
+textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:15px;resize:none;max-height:150px;line-height:1.5}
+.tbtn{background:none;border:none;color:var(--muted);width:32px;height:32px;border-radius:8px;cursor:pointer;font-size:16px;transition:background .12s;flex-shrink:0}
+.tbtn:hover{background:var(--hover)}
+.sendbtn{width:32px;height:32px;border-radius:50%;background:var(--green);border:none;color:#fff;cursor:pointer;font-size:14px;flex-shrink:0;transition:background .15s,transform .1s;opacity:.5}
+.sendbtn.on{opacity:1}
+.sendbtn:hover{background:var(--green2)}
+.sendbtn:active{transform:scale(.9)}
+.foot{max-width:780px;margin:6px auto 0;text-align:center;font-size:11.5px;color:var(--muted)}
+.foot a{color:var(--green);text-decoration:none}
+/* ---- Модалки ---- */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100;display:flex;align-items:center;justify-content:center;padding:16px;opacity:0;visibility:hidden;transition:opacity .22s,visibility .22s}
 .overlay.show{opacity:1;visibility:visible}
-.modal{background:linear-gradient(170deg,var(--panel),var(--bg2));border:1px solid var(--border);border-radius:22px;padding:28px;width:100%;max-width:430px;text-align:center;max-height:90vh;overflow-y:auto;transform:scale(.94) translateY(10px);opacity:0;transition:transform .28s cubic-bezier(.34,1.56,.64,1),opacity .25s}
-.overlay.show .modal{transform:scale(1) translateY(0);opacity:1}
-.modal.wide{max-width:700px}
-.modal .tabs{display:flex;gap:7px;margin-bottom:16px}
-.modal .tab{flex:1;padding:10px;border-radius:11px;background:var(--bg2);border:1px solid var(--border);color:var(--muted);cursor:pointer;font-weight:700;font-size:14px;transition:background .18s,color .18s}
-.modal .tab.active{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border:none}
-.modal h2{margin-bottom:8px}.modal p{color:var(--muted);font-size:14px;margin-bottom:13px}
-.modal input,.modal select,.modal textarea{width:100%;padding:11px;background:var(--bg2);border:1px solid var(--border);border-radius:11px;color:var(--text);font-size:15px;margin-bottom:9px;outline:none;transition:border-color .18s}
-.modal input:focus,.modal select:focus{border-color:var(--accent)}
-.modal .btn{width:100%;padding:12px;border:none;border-radius:11px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-weight:700;font-size:15px;cursor:pointer;margin-bottom:7px;transition:transform .14s,box-shadow .2s}
-.modal .btn:hover{transform:translateY(-1px);box-shadow:0 5px 16px var(--glow)}
-.modal .btn.ghost{background:var(--bg2);color:var(--muted);border:1px solid var(--border)}
-.modal .btn.danger{background:linear-gradient(135deg,var(--danger),#e05060)}
-.hint{font-size:12px;color:var(--muted);margin-top:10px;line-height:1.5}
-.toast{position:fixed;top:20px;right:20px;background:var(--panel);border:1px solid var(--border);border-radius:13px;padding:13px 18px;z-index:400;max-width:320px;transform:translateX(120%);transition:transform .3s cubic-bezier(.34,1.56,.64,1)}
+.modal{background:#fff;border-radius:16px;padding:26px;width:100%;max-width:410px;text-align:center;transform:scale(.95);opacity:0;transition:transform .24s,opacity .22s;box-shadow:0 10px 40px rgba(0,0,0,.2)}
+.overlay.show .modal{transform:scale(1);opacity:1}
+.modal h2{margin-bottom:6px;font-size:20px}.modal p{color:var(--muted);font-size:14px;margin-bottom:16px}
+.tabs{display:flex;background:var(--side);border-radius:8px;padding:4px;margin-bottom:16px}
+.tab{flex:1;padding:8px;border-radius:6px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-weight:500;font-size:14px}
+.tab.active{background:#fff;color:var(--text);box-shadow:0 1px 3px var(--shadow)}
+.inp{width:100%;padding:12px;background:var(--side);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:15px;margin-bottom:10px;outline:none}
+.inp:focus{border-color:var(--green)}
+.btn{width:100%;padding:12px;border:none;border-radius:8px;background:var(--green);color:#fff;font-weight:600;font-size:15px;cursor:pointer;margin-bottom:8px;transition:background .15s}
+.btn:hover{background:var(--green2)}
+.btn.ghost{background:var(--side);color:var(--text);border:1px solid var(--border)}
+.logo-xl{width:54px;height:54px;border-radius:14px;background:var(--green);color:#fff;font-size:28px;font-weight:700;display:flex;align-items:center;justify-content:center;margin:0 auto 14px}
+/* ---- Cookie ---- */
+.cookie{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--border);padding:14px 20px;z-index:200;display:flex;align-items:center;gap:14px;justify-content:space-between;transform:translateY(120%);transition:transform .35s cubic-bezier(.34,1.56,.64,1)}
+.cookie.show{transform:translateY(0)}
+.cookie p{font-size:13px;color:var(--muted)}
+.cookie .cb{background:var(--green);color:#fff;border:none;border-radius:8px;padding:9px 18px;cursor:pointer;font-weight:600;white-space:nowrap;transition:background .15s}
+.cookie .cb:hover{background:var(--green2)}
+.toast{position:fixed;top:18px;right:18px;background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 16px;z-index:400;font-size:14px;box-shadow:0 4px 20px rgba(0,0,0,.15);transform:translateX(130%);transition:transform .3s}
 .toast.show{transform:translateX(0)}
-.toast.error{border-color:var(--danger)}.toast.success{border-color:var(--success)}
-.scrollbar::-webkit-scrollbar{width:6px}.scrollbar::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
-.stat-card{display:grid;grid-template-columns:repeat(auto-fit,minmax(105px,1fr));gap:9px;margin-bottom:13px}
-.scard{background:var(--bg2);border:1px solid var(--border);border-radius:13px;padding:11px;text-align:center}
-.scard .n{font-size:23px;font-weight:800;color:var(--accent)}
-.scard .l{font-size:11px;color:var(--muted)}
-.adm-user{display:flex;align-items:center;gap:5px;padding:7px;background:var(--bg2);border-radius:9px;margin-bottom:5px;font-size:13px;flex-wrap:wrap}
-.adm-user .nm{flex:1;min-width:120px}
-.adm-user select,.adm-user input{width:auto;padding:5px;background:var(--panel);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;margin:0}
-.adm-user .btn{width:auto;padding:5px 9px;font-size:12px;margin:0}
-.prem-row{display:flex;gap:5px;align-items:center;margin-bottom:9px}
-.prem-row input{width:78px;margin:0}.prem-row select{flex:1;margin:0}
-@media(max-width:1024px){.sidebar{position:fixed;left:0;top:0;bottom:0}}
-@media(max-width:768px){
-.sidebar{position:fixed;left:0;top:0;bottom:0;transform:translateX(-100%)}
-.sidebar.open{transform:translateX(0);box-shadow:0 0 40px rgba(0,0,0,.5)}
-.msg .bubble{max-width:90%}.msg .bubble img.a{max-width:150px}
-}
-@media (prefers-reduced-motion: reduce){.part{display:none}}
-</style></head>
-<body data-theme="dark">
-<div class="bg-anim"></div><div class="particles" id="particles"></div>
+.toast.err{border-color:#e5484d}.toast.ok{border-color:var(--green)}
+::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:#d9d9e3;border-radius:4px}
+@media(max-width:768px){.sidebar{position:fixed;left:0;top:0;bottom:0;transform:translateX(-100%)}.sidebar.open{transform:translateX(0);box-shadow:0 0 40px rgba(0,0,0,.3)}.msgrow{padding:14px}.cookie{flex-direction:column;align-items:flex-start}}
+</style></head><body>
 <div class="app">
 <aside class="sidebar" id="sidebar">
-<div class="sidebar-header">
-<button class="side-toggle" onclick="toggleSidebarCollapse()" title="Свернуть">←</button>
-<div class="logo">🤖</div><div class="brand">AWESOME AI</div>
+<button class="new-chat" onclick="newChat()">✏️ Новый чат</button>
+<div class="chat-list" id="chatList"></div>
+<div class="side-foot">
+<button class="side-btn" onclick="openSupport()"><span class="ic">💬</span>Поддержка</button>
+<button class="side-btn" onclick="openSettings()"><span class="ic" id="avBox">?</span><span id="uName">Пользователь</span></button>
 </div>
-<button class="new-chat" onclick="newChat()">＋ Новый чат</button>
-<div class="chat-list scrollbar" id="chatList"></div>
-<div class="sidebar-footer">
-<div class="user-box">
-<div class="avatar" id="userAvatar">?</div>
-<div class="user-info"><div class="user-name" id="userName">Пользователь</div><div class="user-status" id="userStatus">...</div></div>
-<div class="user-actions">
-<button class="mini-btn" onclick="openSettings()" title="Настройки">⚙️</button>
-<button class="mini-btn" onclick="openAdmin()" id="adminBtn" style="display:none" title="Панель">🛡️</button>
-<button class="mini-btn" onclick="toggleTheme()" title="Тема">🌓</button>
-<button class="mini-btn" onclick="logout()" title="Выход">⏻</button>
-</div></div></div></aside>
+</aside>
 <div class="main">
-<div class="main-header">
-<button class="mobile-toggle" onclick="toggleSidebar()">☰</button>
-<div class="title" id="currentChatTitle">Новый чат</div>
-<div class="header-spacer"></div>
+<div class="topbar">
+<button class="burger" onclick="toggleSidebar()">☰</button>
+<div class="ct" id="ctTitle">Новый чат</div>
+<div class="rt" id="uStatus"></div>
 </div>
-<div class="messages scrollbar" id="messages">
+<div class="messages" id="messages">
 <div class="welcome" id="welcome">
-<h1>Чем могу помочь?</h1><p>Твой умный собеседник нового поколения</p>
-<div class="suggestion-grid">
-<div class="sugg" onclick="sendSuggestion('Расскажи подробно про распорядок дня')"><span class="ic">⏰</span>Распорядок дня</div>
-<div class="sugg" onclick="sendSuggestion('Напиши код на Python для парсинга сайта')"><span class="ic">💻</span>Напиши код</div>
-<div class="sugg" onclick="sendSuggestion('погода в Москве')"><span class="ic">🌤</span>Погода</div>
-<div class="sugg" onclick="sendSuggestion('нарисуй кота в космосе')"><span class="ic">🎨</span>Нарисуй</div>
-<div class="sugg" onclick="sendSuggestion('курс доллара')"><span class="ic">💵</span>Курс валют</div>
-<div class="sugg" onclick="sendSuggestion('сколько будет 256*144+18?')"><span class="ic">🧮</span>Математика</div>
-<div class="sugg" onclick="sendSuggestion('придумай название для кафе')"><span class="ic">💡</span>Идея</div>
-<div class="sugg" onclick="sendSuggestion('напиши короткое стихотворение')"><span class="ic">✨</span>Стих</div>
+<h1>Чем я могу помочь?</h1><p>Твой умный собеседник нового поколения</p>
+<div class="sugg-grid">
+<button class="sugg" onclick="send('Объясни простыми словами квантовые вычисления')">🔬 Объясни простыми словами</button>
+<button class="sugg" onclick="send('Напиши код на Python для бота')">💻 Напиши код</button>
+<button class="sugg" onclick="send('Составь план на день')">📋 Составь план</button>
+<button class="sugg" onclick="send('погода в Москве')">🌤 Погода</button>
+<button class="sugg" onclick="send('курс доллара')">💵 Курс валют</button>
+<button class="sugg" onclick="send('придумай название для кофейни')">☕ Идеи названий</button>
 </div></div></div>
-<div class="input-area">
-<div class="attach-preview" id="attachPreview"><img id="attachImg" src=""><span class="an" id="attachName"></span><button class="rm" onclick="removeAttach()">✕</button></div>
-<div class="input-wrap">
-<input type="file" id="fileInput" accept="image/*,.pdf" style="display:none" onchange="handleFile(this)">
-<button class="icon-btn" onclick="document.getElementById('fileInput').click()" title="Прикрепить">📎</button>
-<button class="icon-btn" onclick="startVoice()" title="Голос">🎤</button>
-<button class="icon-btn" onclick="ttsLast()" title="Озвучить">🔊</button>
-<button class="icon-btn" onclick="translateLast()" title="Перевести">🌐</button>
-<textarea id="input" rows="1" placeholder="Спроси что-нибудь..." onkeydown="onKey(event)"></textarea>
-<button class="send-btn" id="sendBtn" onclick="sendMessage()">➤</button>
+<div class="inputarea">
+<div class="inputwrap">
+<button class="tbtn" onclick="draw()" title="Рисовать">🎨</button>
+<textarea id="input" rows="1" placeholder="Отправь сообщение" oninput="autoGrow(this)" onkeydown="onKey(event)"></textarea>
+<button class="sendbtn" id="sendBtn" onclick="send()">➤</button>
 </div>
-<div class="toolbar">
-<button class="tool-btn" onclick="draw()">🎨 Сгенерировать</button>
-<button class="tool-btn" onclick="checkStatus()">💎 Статус</button>
-<button class="tool-btn" onclick="searchShow()">🔍 Поиск</button>
-<button class="tool-btn" onclick="showQuickTools()">⚡ Быстрые</button>
-<button class="tool-btn" onclick="regenLast()">🔄 Переген</button>
-<button class="tool-btn" onclick="stopGen()">⏹ Стоп</button>
-<button class="tool-btn" onclick="clearHistory()">🧹 Очистить</button>
-</div></div></div></div>
+<div class="foot">Awesome AI может ошибаться. Поддержка: <a href="https://t.me/flidges" target="_blank">@flidges</a></div>
+</div>
+</div></div>
+
+<div class="cookie" id="cookie">
+<p>🍪 Мы используем файлы cookie, чтобы улучшить ваш опыт работы с сервисом.</p>
+<button class="cb" onclick="acceptCookie()">Принять</button>
+</div>
 
 <div class="overlay" id="authOverlay">
 <div class="modal">
-<div class="logo" style="width:56px;height:56px;font-size:28px;margin:0 auto 14px;display:flex;align-items:center;justify-content:center;border-radius:14px;background:linear-gradient(135deg,var(--accent),var(--accent2))">🤖</div>
+<div class="logo-xl">A</div>
 <div class="tabs"><button class="tab active" id="tabLogin" onclick="switchTab('login')">Вход</button><button class="tab" id="tabReg" onclick="switchTab('reg')">Регистрация</button></div>
-<h2 id="authTitle">Вход</h2><p id="authSub">Войди в свой аккаунт</p>
-<div id="regFields" style="display:none"><input type="text" id="regName" placeholder="Имя (обязательно)"></div>
-<input type="text" id="authLogin" placeholder="Логин (обязательно)">
-<input type="password" id="authPass" placeholder="Пароль (обязательно)">
+<h2 id="authTitle">Вход</h2><p id="authSub">Войди, чтобы продолжить</p>
+<div id="regWrap" style="display:none"><input class="inp" id="regName" placeholder="Имя"></div>
+<input class="inp" id="authLogin" placeholder="Логин">
+<input class="inp" type="password" id="authPass" placeholder="Пароль">
 <button class="btn" id="authBtn" onclick="submitAuth()">Войти</button>
-<div class="hint">Пароль сохраняется навсегда. Владелец: логин <b>admin</b></div>
+</div></div>
+
+<div class="overlay" id="supportOverlay">
+<div class="modal">
+<div class="logo-xl">💬</div>
+<h2>Поддержка</h2><p>Напишите нам — поможем быстро</p>
+<a class="btn" style="display:block;text-decoration:none;text-align:center" href="https://t.me/flidges" target="_blank">📨 Telegram: @flidges</a>
+<button class="btn ghost" onclick="closeOv('supportOverlay')">Закрыть</button>
 </div></div>
 
 <div class="overlay" id="settingsOverlay">
-<div class="modal"><h2>⚙️ Настройки</h2><p>Твой профиль</p>
-<input type="text" id="setName" placeholder="Имя">
-<input type="text" id="setAvatar" placeholder="URL аватарки">
-<select id="setTheme"><option value="dark">🌙 Тёмная</option><option value="light">☀️ Светлая</option></select>
+<div class="modal"><h2>Профиль</h2><p>Настройки</p>
+<input class="inp" id="setName" placeholder="Имя">
+<div id="profInfo" style="font-size:13px;color:var(--muted);margin-bottom:12px;text-align:left"></div>
 <button class="btn" onclick="saveSettings()">Сохранить</button>
-<button class="btn ghost" onclick="closeOverlay('settingsOverlay')">Закрыть</button></div></div>
-
-<div class="overlay" id="searchOverlay">
-<div class="modal"><h2>🔍 Поиск по чатам</h2><p>Найди сообщение</p>
-<input type="text" id="searchQ" placeholder="Поиск...">
-<button class="btn" onclick="doSearch()">Искать</button>
-<div id="searchResults" style="text-align:left;margin-top:10px;max-height:300px;overflow-y:auto"></div>
-<button class="btn ghost" onclick="closeOverlay('searchOverlay')">Закрыть</button></div></div>
-
-<div class="overlay" id="quickOverlay">
-<div class="modal"><h2>⚡ Быстрые инструменты</h2><p>Полезные помощники</p>
-<button class="btn" onclick="quickAction('переведи на английский: ')">🌐 Перевести</button>
-<button class="btn ghost" onclick="quickAction('объясни простыми словами: ')">💡 Объясни</button>
-<button class="btn ghost" onclick="quickAction('составь план по: ')">📋 Составить план</button>
-<button class="btn ghost" onclick="quickAction('напиши идеи для: ')">💡 Идеи</button>
-<button class="btn ghost" onclick="quickAction('напиши код который: ')">💻 Код</button>
-<button class="btn ghost" onclick="closeOverlay('quickOverlay')">Закрыть</button></div></div>
-
-<div class="overlay" id="adminOverlay">
-<div class="modal wide"><h2>🛡️ Панель владельца</h2><p>Полное управление</p>
-<div id="adminContent" style="text-align:left">Загрузка...</div>
-<button class="btn ghost" onclick="closeOverlay('adminOverlay')">Закрыть</button></div></div>
+<button class="btn ghost" onclick="logout()">Выйти</button>
+<button class="btn ghost" onclick="closeOv('settingsOverlay')">Закрыть</button></div></div>
 
 <script>
-let currentUserId=null,currentChatId=null,sending=false,attachedImage=null,attachedType='image',authMode='login',currentTheme='dark';
-function toast(t,ty){const el=document.createElement('div');el.className='toast '+(ty||'');el.textContent=t;document.body.appendChild(el);requestAnimationFrame(()=>el.classList.add('show'));setTimeout(()=>{el.classList.remove('show');setTimeout(()=>el.remove(),300);},3000);}
-function toggleSidebar(){const s=document.getElementById('sidebar');if(window.innerWidth<=1024){s.classList.toggle('open');}else{s.classList.toggle('collapsed');}}
-function toggleSidebarCollapse(){document.getElementById('sidebar').classList.toggle('collapsed');}
-window.addEventListener('resize',()=>{const s=document.getElementById('sidebar');if(window.innerWidth<=1024){s.classList.remove('collapsed');}else{s.classList.remove('open');}},{passive:true});
-async function api(url,method,body){try{const o={method:method||'GET',headers:{'Content-Type':'application/json'}};if(body)o.body=JSON.stringify(body);const r=await fetch(url,o);const t=await r.text();try{return JSON.parse(t);}catch(e){return{ok:false,error:'Сервер вернул ошибку'};}}catch(e){return{ok:false,error:'Соединение'};}}
-function setTheme(t){currentTheme=t;document.body.setAttribute('data-theme',t);try{localStorage.setItem('awesome_theme',t);}catch(e){}}
-function toggleTheme(){setTheme(currentTheme==='dark'?'light':'dark');api('/api/settings','POST',{theme:currentTheme});}
-function switchTab(m){authMode=m;document.getElementById('tabLogin').className='tab'+(m==='login'?' active':'');document.getElementById('tabReg').className='tab'+(m==='reg'?' active':'');document.getElementById('regFields').style.display=m==='reg'?'block':'none';document.getElementById('authTitle').textContent=m==='reg'?'Регистрация':'Вход';document.getElementById('authBtn').textContent=m==='reg'?'Создать аккаунт':'Войти';}
-async function submitAuth(){const login=document.getElementById('authLogin').value.trim(),pw=document.getElementById('authPass').value;if(!login||!pw){toast('Заполни логин и пароль','error');return;}let body={login:login,password:pw};if(authMode==='reg'){const name=document.getElementById('regName').value.trim();if(!name){toast('Имя обязательно','error');return;}body.name=name;}const r=await api(authMode==='reg'?'/api/register':'/api/login','POST',body);if(r.ok){currentUserId=r.user_id;closeOverlay('authOverlay');toast('Добро пожаловать!','success');init();}else toast(r.error||'Ошибка','error');}
-async function logout(){await api('/api/logout','POST');location.reload();}
-function openOverlay(id){document.getElementById(id).classList.add('show');}
-function closeOverlay(id){document.getElementById(id).classList.remove('show');}
-function openSettings(){api('/api/profile').then(r=>{if(r.ok){document.getElementById('setName').value=r.name||'';document.getElementById('setAvatar').value=r.avatar||'';document.getElementById('setTheme').value=r.theme||'dark';}}).catch(()=>{});openOverlay('settingsOverlay');}
-async function saveSettings(){const body={};body.name=document.getElementById('setName').value.trim()||undefined;body.avatar=document.getElementById('setAvatar').value.trim()||undefined;body.theme=document.getElementById('setTheme').value;const r=await api('/api/settings','POST',body);if(r.ok){setTheme(body.theme);toast('Сохранено','success');closeOverlay('settingsOverlay');init();}else toast('Ошибка','error');}
-async function openAdmin(){const r=await api('/api/admin/stats');if(!r.ok){toast('Нет доступа','error');return;}let h='<div class="stat-card">';
-h+='<div class="scard"><div class="n">'+r.total+'</div><div class="l">Пользователей</div></div>';
-h+='<div class="scard"><div class="n">'+r.premium+'</div><div class="l">Premium</div></div>';
-h+='<div class="scard"><div class="n">'+r.admins+'</div><div class="l">Админов</div></div>';
-h+='<div class="scard"><div class="n">'+r.chats+'</div><div class="l">Чатов</div></div>';
-h+='<div class="scard"><div class="n">'+r.messages+'</div><div class="l">Сообщений</div></div>';
-h+='</div><h3 style="margin:10px 0">👥 Пользователи</h3>';
-(r.users||[]).forEach(u=>{h+='<div class="adm-user"><span class="nm"><b>'+esc(u.name||u.id)+'</b> (#'+esc(u.id)+') Lv'+u.level+'</span>';
-h+='<span style="font-size:11px">'+(u.expires?esc(u.expires):'')+'</span>';
-h+='<select onchange="admGivePrem(\''+esc(u.id)+'\',this.value)"><option value="">Выдать Premium</option><option value="1_h">1 час</option><option value="1_d">1 день</option><option value="7_d">7 дней</option><option value="1_mo">1 месяц</option><option value="1_y">1 год</option></select>';
-h+='<button class="btn danger" onclick="admAction(\''+esc(u.id)+'\',\'take_prem\')">-Prem</button>';
-h+='<button class="btn" onclick="admAction(\''+esc(u.id)+'\',\'give_admin\')">🛡 Админ</button>';
-h+='<button class="btn danger" onclick="admDel(\''+esc(u.id)+'\')">🗑</button></div>';});
-h+='<h3 style="margin:12px 0">🎁 Выдать Premium (свой срок)</h3>';
-h+='<div class="prem-row"><input type="number" id="premNum" value="1" min="1" style="width:80px"><select id="premUnit"><option value="s">секунд</option><option value="min">минут</option><option value="h">часов</option><option value="d">дней</option><option value="w">недель</option><option value="mo">месяцев</option><option value="y">лет</option></select></div>';
-h+='<div class="prem-row"><input type="text" id="premTgId" placeholder="Логин получателя"><button class="btn" onclick="admCustomPrem()">Выдать</button></div>';
-h+='<h3 style="margin:12px 0">🔑 Сброс пароля</h3><input id="rpId" placeholder="Логин"><input id="rpPass" placeholder="Новый пароль"><button class="btn" onclick="adminResetPass()">Сбросить</button>';
-h+='<h3 style="margin:12px 0">⚙️ Тема пользователя</h3><div class="prem-row"><input type="text" id="thId" placeholder="Логин"><select id="thVal"><option value="dark">Тёмная</option><option value="light">Светлая</option></select><button class="btn" onclick="admSetTheme()">Применить</button></div>';
-h+='<button class="btn danger" onclick="adminResetDb()">🗑 Полная очистка аккаунтов</button>';
-document.getElementById('adminContent').innerHTML=h;openOverlay('adminOverlay');}
-async function admAction(id,action){const r=await api('/api/admin/give','POST',{user_id:id,action:action});if(r.ok){toast('OK','success');openAdmin();}else toast(r.error||'Ошибка','error');}
-async function admGivePrem(id,val){if(!val)return;const parts=val.split('_');const r=await api('/api/admin/give','POST',{user_id:id,action:'give_prem',num:parts[0],unit:parts[1]});if(r.ok){toast('Premium выдан','success');openAdmin();}else toast(r.error||'Ошибка','error');}
-async function admCustomPrem(){const id=document.getElementById('premTgId').value.trim(),num=document.getElementById('premNum').value,unit=document.getElementById('premUnit').value;if(!id||!num){toast('Заполни поля','error');return;}const r=await api('/api/admin/give','POST',{user_id:id,action:'give_prem',num:num,unit:unit});if(r.ok){toast('Premium выдан','success');openAdmin();}else toast(r.error||'Ошибка','error');}
-async function admDel(id){if(!confirm('Удалить аккаунт '+id+'?'))return;const r=await api('/api/admin/give','POST',{user_id:id,action:'delete_user'});if(r.ok){toast('Удалён','success');openAdmin();}}
-async function admSetTheme(){const id=document.getElementById('thId').value.trim(),v=document.getElementById('thVal').value;if(!id){toast('Укажи логин','error');return;}const r=await api('/api/admin/give','POST',{user_id:id,action:'set_theme',value:v});if(r.ok){toast('Тема изменена','success');openAdmin();}}
-async function adminResetPass(){const id=document.getElementById('rpId').value.trim(),pw=document.getElementById('rpPass').value;if(!id||!pw){toast('Заполни поля','error');return;}const r=await api('/api/admin/give','POST',{user_id:id,action:'reset_pass',password:pw});if(r.ok){toast('Пароль сброшен','success');openAdmin();}else toast('Ошибка','error');}
-async function adminResetDb(){if(!confirm('Удалить ВСЕ аккаунты? Это сбросит все пароли!'))return;const r=await api('/api/admin/reset_db','POST');if(r.ok){toast('База очищена','success');}}
-function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-function handleFile(inp){const f=inp.files[0];if(!f)return;attachedType=f.type.includes('pdf')?'pdf':'image';const reader=new FileReader();reader.onload=e=>{attachedImage=e.target.result;document.getElementById('attachImg').src=attachedType==='image'?attachedImage:'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg"><text y="30" font-size="20">📄</text></svg>';document.getElementById('attachName').textContent=f.name;document.getElementById('attachPreview').style.display='flex';};reader.readAsDataURL(f);inp.value='';}
-function removeAttach(){attachedImage=null;document.getElementById('attachPreview').style.display='none';}
-function formatAI(t){if(!t)return '';const lines=t.split('\n');let out='';for(const line of lines){const h=line.match(/^\*\*(.+?)\*\*$/);if(h){out+='<div class="h">'+esc(h[1])+'</div>';continue;}const parts=line.split(/(\*\*.*?\*\*)/g);let p='';for(const part of parts){if(part.startsWith('**')&&part.endsWith('**')&&part.length>4)p+='<b>'+esc(part.slice(2,-2))+'</b>';else p+=esc(part);}out+='<div style="margin:3px 0">'+p+'</div>';}return out;}
-function addMsg(role,text,img,isGen){const box=document.getElementById('messages');if(document.getElementById('welcome'))document.getElementById('welcome').style.display='none';const m=document.createElement('div');m.className='msg '+role;let b='';if(img){b+=isGen?'<img class="g" src="'+img+'">':'<img class="a" src="'+img+'">';}let content='';if(role==='ai'&&text)content=formatAI(text);else if(text)content=esc(text);const acts=role==='ai'?'<div class="msg-actions"><button onclick="copyMsg(this)">📋</button><button onclick="regen()">🔄</button><button onclick="ttsMsg(this)">🔊</button><button onclick="transMsg(this)">🌐</button></div>':'';m.innerHTML='<div class="avatar">'+(role==='ai'?'🤖':String(currentUserId||'?').slice(0,1).toUpperCase())+'</div><div class="bubble">'+b+content+'</div>'+acts;box.appendChild(m);box.scrollTop=box.scrollHeight;}
-function copyMsg(btn){const b=btn.closest('.msg').querySelector('.bubble');const t=document.createElement('textarea');t.value=b.innerText;document.body.appendChild(t);t.select();document.execCommand('copy');t.remove();toast('Скопировано 📋','success');}
-function regen(){if(sending)return;const box=document.getElementById('messages');const ms=box.querySelectorAll('.msg');if(ms.length<2)return;const last=ms[ms.length-1];if(last.classList.contains('ai')){last.remove();const us=box.querySelectorAll('.msg.user');if(us.length)sendMessage(us[us.length-1].querySelector('.bubble').innerText,true);}}
-function regenLast(){if(sending)return;regen();}
-function ttsMsg(btn){const b=btn.closest('.msg').querySelector('.bubble').innerText;if('speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(b));toast('🔊','success');}}
-function ttsLast(){const ms=document.querySelectorAll('.msg.ai');if(ms.length&&'speechSynthesis'in window){speechSynthesis.cancel();speechSynthesis.speak(new SpeechSynthesisUtterance(ms[ms.length-1].querySelector('.bubble').innerText));}}
-async function transMsg(btn){const b=btn.closest('.msg').querySelector('.bubble').innerText;const r=await api('/api/translate','POST',{text:b,target:'ru'});if(r.ok)toast('🌐 '+r.translated.slice(0,250),'success');}
-async function translateLast(){const ms=document.querySelectorAll('.msg.ai');if(!ms.length)return;const r=await api('/api/translate','POST',{text:ms[ms.length-1].querySelector('.bubble').innerText,target:'ru'});if(r.ok)toast('🌐 '+r.translated.slice(0,250),'success');}
-function searchShow(){document.getElementById('searchQ').value='';document.getElementById('searchResults').innerHTML='';openOverlay('searchOverlay');}
-async function doSearch(){const q=document.getElementById('searchQ').value.trim();if(!q)return;const r=await api('/api/search','POST',{q:q});let h='';if(r.ok&&r.results.length){r.results.forEach(x=>{h+='<div style="background:var(--bg2);border-radius:10px;padding:8px;margin:5px 0;cursor:pointer" onclick="gotoChat('+x.chat_id+')"><b>'+esc(x.title)+'</b><br><span style="color:var(--muted);font-size:12px">'+esc(x.snippet)+'</span></div>';});}else h='<p style="color:var(--muted)">Ничего не найдено</p>';document.getElementById('searchResults').innerHTML=h;}
-function gotoChat(id){closeOverlay('searchOverlay');loadChats();}
-function showQuickTools(){openOverlay('quickOverlay');}
-async function quickAction(prefix){closeOverlay('quickOverlay');const v=document.getElementById('input').value.trim();sendMessage(prefix+v);}
-function stopGen(){if(!sending)return;removeTyping();setSending(false);addMsg('ai','⏹ Генерация остановлена.',null,false);}
-function addTyping(){const box=document.getElementById('messages');const m=document.createElement('div');m.className='msg ai';m.id='typing';m.innerHTML='<div class="avatar">🤖</div><div class="bubble"><div class="typing-dots"><span></span><span></span><span></span></div></div>';box.appendChild(m);box.scrollTop=box.scrollHeight;}
-function removeTyping(){const t=document.getElementById('typing');if(t)t.remove();}
-async function sendMessage(text,regenMode){if(sending&&!regenMode)return;const input=document.getElementById('input');const msg=(text!==undefined&&text!==null)?text:input.value.trim();if(!msg&&!attachedImage)return;if(!regenMode){input.value='';addMsg('user',msg,attachedType==='image'?attachedImage:null,false);}setSending(true);addTyping();try{const body={message:msg,chat_id:currentChatId};if(attachedImage){if(attachedType==='pdf')body.document={type:'pdf',name:document.getElementById('attachName').textContent,data:attachedImage};else body.image=attachedImage;}const r=await api('/api/chat','POST',body);removeTyping();if(r.ok){currentChatId=r.chat_id;addMsg('ai',r.response,null,false);document.getElementById('currentChatTitle').textContent='Чат';loadChats();}else{addMsg('ai','⚠️ '+r.error);toast(r.error,'error');}}catch(e){removeTyping();addMsg('ai','⚠️ Ошибка');}attachedImage=null;document.getElementById('attachPreview').style.display='none';setSending(false);checkStatus();}
-function setSending(v){sending=v;document.getElementById('sendBtn').disabled=v;document.getElementById('input').disabled=v;}
-function onKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}}
-function sendSuggestion(t){sendMessage(t);}
-async function newChat(){const r=await api('/api/chat/new','POST');if(r.ok){currentChatId=r.chat_id;document.getElementById('messages').innerHTML='';document.getElementById('welcome').style.display='';document.getElementById('currentChatTitle').textContent='Новый чат';document.getElementById('sidebar').classList.remove('open');}}
-async function loadChats(){const r=await api('/api/chats');if(!r.ok)return;const list=document.getElementById('chatList');list.innerHTML='';r.chats.forEach(c=>{const it=document.createElement('div');it.className='chat-item'+(c.id===currentChatId?' active':'');it.innerHTML=(c.pinned?'⭐ ':'💬')+'<span class="t">'+esc(c.title||'Новый чат')+'</span><button class="del" onclick="delChat('+c.id+',event)">✕</button>';it.onclick=()=>openChat(c);list.appendChild(it);});}
-function openChat(c){currentChatId=c.id;const box=document.getElementById('messages');box.innerHTML='';document.getElementById('currentChatTitle').textContent=c.title||'Чат';(c.messages||[]).forEach(m=>addMsg(m.role,m.content,m.image,false));document.getElementById('sidebar').classList.remove('open');}
-async function delChat(id,e){e.stopPropagation();if(!confirm('Удалить чат?'))return;await api('/api/chat/delete','POST',{chat_id:id});if(id===currentChatId){currentChatId=null;boxReset();}loadChats();}
-function boxReset(){document.getElementById('messages').innerHTML='';document.getElementById('welcome').style.display='';document.getElementById('currentChatTitle').textContent='Новый чат';}
-function clearHistory(){if(!confirm('Очистить?'))return;document.getElementById('messages').innerHTML='';document.getElementById('welcome').style.display='';toast('Очищено','success');}
-async function checkStatus(){const r=await api('/api/status');if(!r.ok){toast('Авторизуйся','error');return;}document.getElementById('userStatus').textContent=r.status_text+' · '+r.limit_text+' · Ур.'+r.level;document.getElementById('adminBtn').style.display=r.is_owner?'':'none';}
-async function draw(){const input=document.getElementById('input');const p=prompt('🎨 Опиши что нарисовать:',input.value||'');if(!p||!p.trim())return;addMsg('user','🎨 '+p,null,false);setSending(true);addTyping();const r=await api('/api/draw','POST',{prompt:p});removeTyping();if(r.ok&&r.image){addMsg('ai','Готово!',r.image,true);}else addMsg('ai','⚠️ '+(r.error||'Не удалось'));setSending(false);checkStatus();}
-function startVoice(){if(!('webkitSpeechRecognition'in window)){toast('Голос не поддерживается','error');return;}const rec=new webkitSpeechRecognition();rec.lang='ru-RU';rec.onresult=e=>{document.getElementById('input').value+=e.results[0][0].transcript;};rec.start();toast('Говори... 🎤','success');}
-let partStarted=false;
-function spawnParticles(){if(partStarted||document.getElementById('particles').childElementCount>0)return;partStarted=true;const c=document.getElementById('particles');const colors=['#6ea8ff','#55e6c1','#7c4dff'];const N=Math.min(8,Math.floor(window.innerWidth/180));for(let i=0;i<N;i++){const p=document.createElement('div');p.className='part';const s=3+Math.random()*5;p.style.width=s+'px';p.style.height=s+'px';p.style.left=Math.random()*100+'%';p.style.background=colors[i%3];p.style.animationDuration=(11+Math.random()*14)+'s';p.style.animationDelay=(-Math.random()*18)+'s';c.appendChild(p);}}
-async function init(){spawnParticles();const me=await api('/api/me');if(me.ok){currentUserId=me.user_id;document.getElementById('authOverlay').classList.remove('show');document.getElementById('userAvatar').textContent=String(me.name||me.user_id).slice(0,1).toUpperCase();document.getElementById('userName').textContent=me.name||me.user_id;document.getElementById('userStatus').textContent='...';if(me.theme)setTheme(me.theme);await loadChats();await checkStatus();}else{openOverlay('authOverlay');try{const t=localStorage.getItem('awesome_theme');if(t)setTheme(t);}catch(e){}}}
-document.addEventListener('DOMContentLoaded',init);
+let uid=null,cid=null,sending=false,mode='login';
+const $=id=>document.getElementById(id);
+function toast(t,ty){const e=document.createElement('div');e.className='toast '+(ty||'');e.textContent=t;document.body.appendChild(e);requestAnimationFrame(()=>e.classList.add('show'));setTimeout(()=>{e.classList.remove('show');setTimeout(()=>e.remove(),300)},3000)}
+async function api(u,m,b){try{const o={method:m||'GET',headers:{'Content-Type':'application/json'}};if(b)o.body=JSON.stringify(b);const r=await fetch(u,o);const t=await r.text();try{return JSON.parse(t)}catch(e){return{ok:false,error:'Сервер ['+r.status+']: '+t.slice(0,200)}}}catch(e){return{ok:false,error:'Нет соединения'}}}
+function toggleSidebar(){const s=$('sidebar');if(innerWidth<=768)s.classList.toggle('open');else s.classList.toggle('closed')}
+function openOv(id){$(id).classList.add('show')}
+function closeOv(id){$(id).classList.remove('show')}
+function switchTab(m){mode=m;$('tabLogin').className='tab'+(m==='login'?' active':'');$('tabReg').className='tab'+(m==='reg'?' active':'');$('regWrap').style.display=m==='reg'?'block':'none';$('authTitle').textContent=m==='reg'?'Регистрация':'Вход';$('authBtn').textContent=m==='reg'?'Создать':'Войти'}
+async function submitAuth(){const login=$('authLogin').value.trim(),pw=$('authPass').value;if(!login||!pw){toast('Заполни логин и пароль','err');return}const body=mode==='reg'?{login,password:pw,name:$('regName').value.trim()}:{login,password:pw};const r=await api(mode==='reg'?'/api/register':'/api/login','POST',body);if(r.ok){uid=r.user_id;closeOv('authOverlay');toast('Добро пожаловать!','ok');init()}else toast(r.error||'Ошибка','err')}
+async function logout(){await api('/api/logout','POST');location.reload()}
+async function init(){const me=await api('/api/me');if(me.ok){uid=me.user_id;$('authOverlay').classList.remove('show');if(me.avatar)$('avBox').innerHTML='<img src="'+me.avatar+'">';else $('avBox').textContent=String(me.name||'?').slice(0,1).toUpperCase();$('uName').textContent=me.name||'Пользователь';await loadChats();await checkStatus()}else openOv('authOverlay')}
+async function checkStatus(){const r=await api('/api/status');if(r.ok)$('uStatus').textContent=r.status_text+' · Ур.'+r.level}
+async function loadChats(){const r=await api('/api/chats');if(!r.ok)return;const l=$('chatList');l.innerHTML='';r.chats.forEach(c=>{const d=document.createElement('div');d.className='chat-item'+(c.id===cid?' active':'');d.innerHTML=(c.pinned?'⭐ ':'💬')+'<span class="t">'+esc(c.title||'Чат')+'</span><button class="del" onclick="delChat('+c.id+',event)">✕</button>';d.onclick=()=>openChat(c);l.appendChild(d)})}
+function openChat(c){cid=c.id;$('messages').innerHTML='';$('welcome').style.display='none';$('ctTitle').textContent=c.title||'Чат';(c.messages||[]).forEach(m=>addMsg(m.role,m.content,m.image));if(innerWidth<=768)toggleSidebar()}
+async function newChat(){const r=await api('/api/chat/new','POST');if(r.ok){cid=r.chat_id;$('messages').innerHTML='';$('welcome').style.display='';$('ctTitle').textContent='Новый чат';loadChats()}}
+async function delChat(id,e){e.stopPropagation();await api('/api/chat/delete','POST',{chat_id:id});if(id===cid){cid=null;boxReset()}loadChats()}
+function boxReset(){$('messages').innerHTML='';$('welcome').style.display='';$('ctTitle').textContent='Новый чат'}
+function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function fmtAI(t){if(!t)return'';let out='';for(const line of t.split('\n')){const h=line.match(/^\*\*(.+?)\*\*$/);if(h){out+='<div class="h">'+esc(h[1])+'</div>';continue}const parts=line.split(/(\*\*.*?\*\*)/g);let p='';for(const part of parts){if(part.startsWith('**')&&part.endsWith('**')&&part.length>4)p+='<b>'+esc(part.slice(2,-2))+'</b>';else p+=esc(part)}out+='<div style="margin:2px 0">'+p+'</div>'}return out}
+function addMsg(role,text,img){const box=$('messages');if($('welcome'))$('welcome').style.display='none';const m=document.createElement('div');m.className='msgrow '+role;let av=role==='user'?'<div class="ma">'+String(uid||'?').slice(0,1).toUpperCase()+'</div>':'<div class="ma">🤖</div>';let content=role==='ai'?fmtAI(text):esc(text);if(img)content+='<img style="max-width:100%;border-radius:10px;margin-top:8px" src="'+img+'">';m.innerHTML=av+'<div class="mb">'+content+'</div>';box.appendChild(m);box.scrollTop=box.scrollHeight}
+function addTyping(){const box=$('messages');const m=document.createElement('div');m.className='msgrow ai';m.id='typing';m.innerHTML='<div class="ma">🤖</div><div class="mb typing"><span></span><span></span><span></span></div>';box.appendChild(m);box.scrollTop=box.scrollHeight}
+function rmTyping(){const t=$('typing');if(t)t.remove()}
+async function send(preset){if(sending)return;const input=$('input');const msg=(preset!==undefined)?preset:input.value.trim();if(!msg)return;input.value='';autoGrow(input);addMsg('user',msg);sending=true;addTyping();const r=await api('/api/chat','POST',{message:msg,chat_id:cid});rmTyping();sending=false;if(r.ok){cid=r.chat_id;addMsg('ai',r.response);$('ctTitle').textContent='Чат';loadChats()}else addMsg('ai','⚠️ '+(r.error||'Ошибка'));checkStatus()}
+function onKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}}
+function autoGrow(t){t.style.height='auto';t.style.height=Math.min(t.scrollHeight,150)+'px'}
+async function draw(){const p=prompt('🎨 Что нарисовать?');if(!p)return;addMsg('user','🎨 '+p);sending=true;addTyping();const r=await api('/api/draw','POST',{prompt:p});rmTyping();sending=false;if(r.ok&&r.image)addMsg('ai','Готово!',r.image);else addMsg('ai','⚠️ '+(r.error||'Не удалось'))}
+function openSupport(){openOv('supportOverlay')}
+async function openSettings(){const r=await api('/api/profile');if(r.ok){$('setName').value=r.name||'';$('profInfo').innerHTML='ID: <b>'+esc(r.user_id)+'</b><br>'+(r.premium?'💎 Premium до '+esc(r.premium_expires):'🔓 Free')+'<br>⭐ Уровень '+r.level+' · XP '+r.xp}openOv('settingsOverlay')}
+async function saveSettings(){const r=await api('/api/settings','POST',{name:$('setName').value.trim()||undefined});if(r.ok){closeOv('settingsOverlay');toast('Сохранено','ok');init()}}
+function acceptCookie(){$('cookie').classList.remove('show');try{localStorage.setItem('sc_cookie','1')}catch(e){}}
+document.addEventListener('DOMContentLoaded',()=>{init();try{if(!localStorage.getItem('sc_cookie'))setTimeout(()=>$('cookie').classList.add('show'),800)}catch(e){}});
 </script></body></html>"""
 
 if __name__ == '__main__':
-    print("🧠 AWESOME AI WEB — ULTRA v2 (имя + логин + пароль)")
+    print("🧠 AWESOME AI — ChatGPT Clone (Supabase)")
     port = int(os.getenv("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
