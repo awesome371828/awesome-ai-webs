@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AWESOME AI — PRO ULTRA: PostgreSQL (relaxdev), вход по логину+паролю, анализ фото, Premium (лимит 50), мультипровайдер, живой 3D-визуал"""
+"""AWESOME AI — NEXUS: PostgreSQL (relaxdev), Premium (лимит 50), фото-анализ, мультипровайдер, живой премиум-визуал"""
 import os, re, io, time, json, base64, urllib.parse, hashlib, random, html, uuid as _uuid
 from datetime import datetime, timedelta, timezone
 import requests, urllib3
@@ -34,9 +34,9 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 OWNER_LOGIN, OWNER_PASSWORD = "admin", "qawsedrf2346"
-FREE_LIMIT = 50   # лимит запросов в день для бесплатных
-MAX_HISTORY = 100
-GIGA_TIMEOUT, YGPT_TIMEOUT, SEARCH_TIMEOUT = 30, 25, 5
+FREE_LIMIT = 50
+MAX_HISTORY = 24
+GIGA_TIMEOUT, YGPT_TIMEOUT, SEARCH_TIMEOUT = 35, 30, 5
 
 MOSCOW_TZ = timezone(timedelta(hours=3))
 def gm(): return datetime.now(MOSCOW_TZ)
@@ -220,7 +220,7 @@ def get_tok():
             r=requests.post("https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
                 headers={"Content-Type":"application/x-www-form-urlencoded","Accept":"application/json",
                          "RqUID":str(_uuid.uuid4()),"Authorization":"Basic "+GIGACHAT_AUTH_KEY},
-                data="scope=GIGACHAT_API_PERS",timeout=10,verify=False)
+                data="scope=GIGACHAT_API_PERS",timeout=12,verify=False)
             if r.status_code==200:
                 j=r.json()
                 if j.get("access_token"): tok=j["access_token"]; tok_t=time.time(); return tok
@@ -276,27 +276,37 @@ def deepseek_call(hlist, sysp, max_tok=1200):
     except Exception: pass
     return None
 def describe_img(b64):
-    try:
-        t=get_tok()
-        if not t: return None
-        r=requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
-            headers={"Authorization":"Bearer "+t,"Content-Type":"application/json","Accept":"application/json"},
-            json={"model":"GigaChat-Pro","messages":[{"role":"system","content":"Ты анализируешь изображение, подробно опиши что видишь на русском."},
-                {"role":"user","content":[{"type":"text","text":"Что на изображении?"},{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,"+b64}}]}],"temperature":0.5,"max_tokens":500},timeout=GIGA_TIMEOUT,verify=False)
-        if r.status_code==200:
-            try: return r.json()["choices"][0]["message"]["content"]
-            except Exception: return None
-    except Exception: pass
+    """Анализ фото через GigaChat (vision). Пытается несколько раз."""
+    for attempt in range(2):
+        try:
+            t=get_tok()
+            if not t: return None
+            payload={"model":"GigaChat-Pro","messages":[
+                {"role":"system","content":"Ты — эксперт по анализу изображений. Подробно, интересно и живо опиши на русском, что видишь на фото: объекты, людей, эмоции, окружение, детали."},
+                {"role":"user","content":[
+                    {"type":"text","text":"Подробно опиши, что изображено на этой фотографии."},
+                    {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,"+b64}}
+                ]}],"temperature":0.6,"max_tokens":700}
+            r=requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
+                headers={"Authorization":"Bearer "+t,"Content-Type":"application/json","Accept":"application/json"},
+                json=payload,timeout=GIGA_TIMEOUT,verify=False)
+            if r.status_code==200:
+                try:
+                    c=r.json()["choices"][0]["message"]["content"]
+                    if c and len(c.strip())>3: return c.strip()
+                except Exception: return None
+        except Exception: pass
+        time.sleep(1.0)
     return None
 
-SUPER="""ТЫ — AWESOME AI, мощный живой ИИ уровня ChatGPT.
+SUPER="""ТЫ — AWESOME AI NEXUS, самая современная живая нейросеть уровня ChatGPT.
 РОССИЯ, МОСКВА. Сегодня: {d}, время: {t} (МСК).
 {memory}
-СТИЛЬ: живой эксперт, тепло, с юмором. Конкретика, цифры, примеры.
-ФОРМАТ: разделы **1. Название**. Важное **жирным**. Эмодзи.
-Если есть анализ изображения — отвечай по нему."""
+СТИЛЬ: живой, тёплый, умный собеседник с лёгким юмором. Конкретика, цифры, примеры.
+ФОРМАТ: разделы **1. Название**, важное **жирным**, эмодзи где уместно.
+Если тебе дали описание изображения — отталкивайся от него и отвечай по существу."""
 
-def smart_answer(uid, text, history, img_desc=None, doc=None):
+def smart_answer(uid, text, history, img_desc=None, doc=None, has_img=False):
     mem=get_memory(uid)
     sp=SUPER.format(d=gdate(), t=gm().strftime('%H:%M'),
         memory=("Помнишь о пользователе:\n"+"\n".join("• "+f for f in mem)) if mem else "")
@@ -305,8 +315,10 @@ def smart_answer(uid, text, history, img_desc=None, doc=None):
     tl=(text or "").lower().strip()
     try: extract_facts(uid, text)
     except Exception: pass
-    hfull=history+[{"role":"user","content":text or "Опиши"}]
-    # Цепочка провайдеров: GigaChat → YandexGPT → ChatGPT → DeepSeek → локальные фолбэки
+    # если прислали только фото и анализа нет — честно говорим, что видим
+    if has_img and not text.strip() and not img_desc:
+        return "📷 Вижу, ты прислал изображение, но не смог его сейчас обработать (внешний сервис недоступен). Опиши словами, что на нём, или напиши вопрос — сразу помогу!"
+    hfull=history+[{"role":"user","content":text or "Опиши изображение" if has_img else (text or "Опиши")}]
     a=giga(hfull, sp)
     if a and len(a)>4: return a
     b=ygpt(text, sp)
@@ -396,7 +408,7 @@ def read_pdf(b64):
 # ================= API =================
 @app.route('/favicon.ico')
 def favicon():
-    svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="24" fill="#10a37f"/><path d="M50 20 L80 80 H68 L61 64 H39 L32 80 H20 Z M45 54 H55 L50 42 Z" fill="#fff"/></svg>'
+    svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#10a37f"/><stop offset="1" stop-color="#3b82f6"/></linearGradient></defs><rect width="100" height="100" rx="26" fill="url(#g)"/><path d="M50 20 L80 80 H68 L61 64 H39 L32 80 H20 Z M45 54 H55 L50 42 Z" fill="#fff"/></svg>'
     return app.response_class(svg, mimetype='image/svg+xml')
 
 @app.route('/')
@@ -456,18 +468,18 @@ def api_chat():
     d=request.json; msg=d.get('message','').strip(); cid=d.get('chat_id'); img=d.get('image'); doc=d.get('document')
     if not msg and not img and not doc: return jsonify({'ok':False,'error':'Пустое'})
     if not cid: cid=create_chat(uid)
-    h=hist(cid); idesc=None; dtext=None
+    h=hist(cid); idesc=None; dtext=None; has_img=bool(img)
     if img:
         try:
             raw=base64.b64decode(img.split(',')[-1])
             if HAS_PIL:
-                im=Image.open(io.BytesIO(raw)).convert('RGB'); im.thumbnail((900,900))
-                b=io.BytesIO(); im.save(b,'JPEG',quality=85); idesc=describe_img(base64.b64encode(b.getvalue()).decode())
+                im=Image.open(io.BytesIO(raw)).convert('RGB'); im.thumbnail((1200,1200))
+                b=io.BytesIO(); im.save(b,'JPEG',quality=88); idesc=describe_img(base64.b64encode(b.getvalue()).decode())
             else: idesc=describe_img(img.split(',')[-1])
         except Exception: idesc=None
     if doc: dtext=read_pdf(doc.get('data','')) if doc.get('type')=='pdf' else "Документ: "+doc.get('name','')
     add_msg(cid,'user',msg,img)
-    response=smart_answer(uid,msg,h,idesc,dtext)
+    response=smart_answer(uid,msg,h,idesc,dtext,has_img)
     try: incr(uid)
     except Exception: pass
     add_msg(cid,'assistant',response)
@@ -535,13 +547,11 @@ def api_settings():
     if d.get('name'): session['name']=d['name']
     return jsonify({'ok':True})
 
-# ---- Админка ----
 def admin_check():
     uid=session.get('user_id')
     if not uid: return None,False,"Нет авторизации"
     if not eff_status(uid)['is_owner']: return None,False,"Нет доступа"
     return uid,True,""
-UNITS={'s':'секунд','min':'минут','h':'часов','d':'дней','w':'недель','mo':'месяцев','y':'лет'}
 def parse_duration(num,unit):
     try: n=int(num)
     except: return None
@@ -567,7 +577,6 @@ def admin_stats():
                     'users':[{'id':r[0],'name':r[1],'premium':r[2],'is_admin':r[3],'expires':r[4],'level':r[5],'xp':r[6]} for r in users]})
 @app.route('/api/resetadmin')
 def resetadmin():
-    """Гарантированно сбрасывает пароль владельца admin на qawsedrf2346."""
     try:
         good = hashlib.sha256("qawsedrf2346".encode()).hexdigest()
         conn = get_db(); cur = conn.cursor()
@@ -606,90 +615,100 @@ def admin_give():
     except Exception as e: return jsonify({'ok':False,'error':'Ошибка: '+str(e)})
     return jsonify({'ok':True})
 
-# ================= HTML (живой 3D-визуал + Premium + адаптив) =================
+# ================= HTML (премиум-визуал: стекло, свечение, живые слои) =================
 INDEX_HTML = r"""<!DOCTYPE html><html lang="ru"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Awesome AI</title><link rel="icon" href="/favicon.ico">
 <style>
-:root{--bg:#0b0f14;--side:#0f141a;--side2:#151c24;--border:rgba(255,255,255,.10);--text:#eef2f7;--muted:#9aa7b5;--green:#10a37f;--green2:#0e8a6d;--hover:#1a222c;--gold:#f5c542}
+:root{--bg:#07090d;--panel:rgba(18,23,32,.62);--panel2:rgba(24,30,42,.72);--line:rgba(255,255,255,.09);--text:#f0f4f8;--muted:#98a6b6;--accent:#22e0a8;--accent2:#5b8cff;--accent3:#a855f7;--gold:#ffd76a;--danger:#ff5c7a}
 *{margin:0;padding:0;box-sizing:border-box;font-family:'Söhne','Segoe UI',system-ui,sans-serif}
 html,body{height:100%}
 body{background:var(--bg);color:var(--text);overflow:hidden;-webkit-font-smoothing:antialiased}
-/* Живой анимированный 3D-фон */
-.bg{position:fixed;inset:0;z-index:0;overflow:hidden;background:radial-gradient(circle at 20% 20%,#0f2b24,#0b0f14 50%),radial-gradient(circle at 80% 80%,#121a3a,#0b0f14 55%)}
-.orb{position:absolute;border-radius:50%;filter:blur(60px);opacity:.55;will-change:transform;mix-blend-mode:screen}
-.orb.o1{width:480px;height:480px;background:radial-gradient(circle,#10a37f,transparent 70%);top:-120px;left:-80px;animation:float1 18s ease-in-out infinite}
-.orb.o2{width:420px;height:420px;background:radial-gradient(circle,#3b82f6,transparent 70%);bottom:-100px;right:-60px;animation:float2 22s ease-in-out infinite}
-.orb.o3{width:360px;height:360px;background:radial-gradient(circle,#8b5cf6,transparent 70%);top:40%;left:55%;animation:float3 26s ease-in-out infinite}
-.star{position:absolute;width:2px;height:2px;background:#fff;border-radius:50%;opacity:.6;animation:twinkle 3s ease-in-out infinite}
-@keyframes float1{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(60px,40px) scale(1.15)}}
-@keyframes float2{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-70px,-30px) scale(1.1)}}
-@keyframes float3{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(30px,-60px) scale(1.2)}}
-@keyframes twinkle{0%,100%{opacity:.2}50%{opacity:.9}}
+/* === Живая фоновая сцена === */
+.scene{position:fixed;inset:0;z-index:0;overflow:hidden;background:
+radial-gradient(120% 120% at 15% 10%,#0d2b24 0%,transparent 50%),
+radial-gradient(120% 120% at 85% 20%,#141a3d 0%,transparent 50%),
+radial-gradient(120% 120% at 50% 100%,#1b1030 0%,transparent 55%),
+#07090d}
+.glow{position:absolute;border-radius:50%;filter:blur(70px);mix-blend-mode:screen;will-change:transform;animation:drift var(--d,20s) ease-in-out infinite alternate}
+.g1{--d:16s;width:520px;height:520px;background:radial-gradient(circle,#16d6a4,transparent 65%);top:-140px;left:-100px;opacity:.5}
+.g2{--d:22s;width:460px;height:460px;background:radial-gradient(circle,#4f7dff,transparent 65%);bottom:-120px;right:-80px;opacity:.45}
+.g3{--d:28s;width:400px;height:400px;background:radial-gradient(circle,#b26bff,transparent 65%);top:45%;left:52%;opacity:.4}
+.g4{--d:34s;width:360px;height:360px;background:radial-gradient(circle,#ffd76a,transparent 68%);top:8%;right:22%;opacity:.25}
+@keyframes drift{0%{transform:translate(0,0) scale(1)}100%{transform:translate(var(--tx,60px),var(--ty,40px)) scale(1.18)}}
+.star{position:absolute;border-radius:50%;background:#fff;opacity:.7;animation:tw 3s ease-in-out infinite}
+@keyframes tw{0%,100%{opacity:.15}50%{opacity:.85}}
+.gridline{position:absolute;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.08),transparent);opacity:.5}
 .app{position:relative;z-index:1;display:flex;height:100vh}
-/* Сайдбар со стеклом */
-.sidebar{width:270px;background:rgba(15,20,26,.75);backdrop-filter:blur(18px);border-right:1px solid var(--border);display:flex;flex-direction:column;transition:transform .28s cubic-bezier(.4,0,.2,1);z-index:60}
+/* === Сайдбар-стекло === */
+.sidebar{width:280px;background:var(--panel);backdrop-filter:blur(22px) saturate(1.4);-webkit-backdrop-filter:blur(22px) saturate(1.4);border-right:1px solid var(--line);display:flex;flex-direction:column;transition:transform .3s cubic-bezier(.4,0,.2,1);z-index:60}
 .sidebar.closed{transform:translateX(-100%);width:0;min-width:0;border-right:none}
-.new-chat{margin:12px;padding:12px 14px;background:linear-gradient(135deg,rgba(16,163,127,.18),rgba(59,130,246,.12));border:1px solid var(--border);border-radius:12px;color:#fff;cursor:pointer;font-size:14px;display:flex;align-items:center;gap:9px;font-weight:500;transition:.2s}.new-chat:hover{border-color:var(--green);transform:translateY(-1px)}
+.brand{display:flex;align-items:center;gap:11px;padding:16px 14px 12px}
+.brand .logo{width:38px;height:38px;border-radius:11px;background:conic-gradient(from 180deg,#22e0a8,#5b8cff,#a855f7,#22e0a8);display:flex;align-items:center;justify-content:center;box-shadow:0 6px 22px rgba(34,224,168,.45);animation:spin 8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.brand .nm{font-weight:700;font-size:17px;background:linear-gradient(90deg,#22e0a8,#5b8cff);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.new-chat{margin:4px 12px 10px;padding:12px 14px;background:linear-gradient(135deg,rgba(34,224,168,.16),rgba(91,140,255,.14));border:1px solid var(--line);border-radius:13px;color:#fff;cursor:pointer;font-size:14px;display:flex;align-items:center;gap:9px;font-weight:600;transition:.2s}.new-chat:hover{border-color:rgba(34,224,168,.6);transform:translateY(-1px);box-shadow:0 8px 24px rgba(34,224,168,.15)}
 .chat-list{flex:1;overflow-y:auto;padding:4px 8px}
-.chat-item{padding:11px 13px;border-radius:10px;cursor:pointer;margin-bottom:3px;font-size:13.5px;display:flex;align-items:center;gap:9px;transition:.15s}.chat-item:hover,.chat-item.active{background:rgba(255,255,255,.06)}
+.chat-item{padding:11px 13px;border-radius:11px;cursor:pointer;margin-bottom:3px;font-size:13.5px;display:flex;align-items:center;gap:9px;transition:.15s;border:1px solid transparent}.chat-item:hover,.chat-item.active{background:rgba(255,255,255,.05);border-color:var(--line)}
 .chat-item .t{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chat-item .del{opacity:0;background:none;border:none;color:var(--muted);cursor:pointer}.chat-item:hover .del{opacity:1}
-.side-foot{padding:8px;border-top:1px solid var(--border)}
-.side-btn{display:flex;align-items:center;gap:9px;width:100%;padding:9px 10px;border:none;background:none;color:var(--text);cursor:pointer;font-size:13.5px;border-radius:10px;text-align:left}.side-btn:hover{background:rgba(255,255,255,.06)}
-.side-btn .ic{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--green),#3b82f6);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:14px;flex-shrink:0;overflow:hidden}
-/* Премиум кнопка */
-.prem-btn{margin:6px 10px;padding:11px;border-radius:12px;border:none;cursor:pointer;font-weight:700;font-size:14px;color:#1a1204;background:linear-gradient(120deg,#ffd76a,#ffab40,#ff7a59);background-size:220% 220%;animation:gradshift 4s ease infinite;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 6px 20px rgba(255,180,70,.35);transition:.2s}.prem-btn:hover{transform:translateY(-2px) scale(1.02);box-shadow:0 10px 30px rgba(255,180,70,.5)}
-@keyframes gradshift{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+.side-foot{padding:8px;border-top:1px solid var(--line)}
+.side-btn{display:flex;align-items:center;gap:10px;width:100%;padding:9px 11px;border:none;background:none;color:var(--text);cursor:pointer;font-size:13.5px;border-radius:11px;text-align:left;transition:.15s}.side-btn:hover{background:rgba(255,255,255,.05)}
+.side-btn .ic{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:15px;flex-shrink:0;box-shadow:0 4px 14px rgba(34,224,168,.25)}
+.prem-btn{margin:8px 10px;padding:12px;border-radius:13px;border:none;cursor:pointer;font-weight:800;font-size:14px;color:#241503;background:linear-gradient(120deg,#ffe08a,#ffb347,#ff7a59);background-size:220% 220%;animation:grad 4s ease infinite;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 8px 26px rgba(255,170,70,.4);transition:.2s}.prem-btn:hover{transform:translateY(-2px) scale(1.02);box-shadow:0 12px 34px rgba(255,170,70,.55)}
+.prem-btn.act{background:linear-gradient(120deg,#22e0a8,#34d399);color:#04241a;box-shadow:0 8px 26px rgba(34,224,168,.35)}
+@keyframes grad{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
 .main{flex:1;display:flex;flex-direction:column;min-width:0}
-.topbar{height:52px;display:flex;align-items:center;gap:8px;padding:0 16px;border-bottom:1px solid var(--border);flex-shrink:0;background:rgba(11,15,20,.5);backdrop-filter:blur(10px)}
-.burger{background:none;border:none;color:var(--text);font-size:19px;cursor:pointer;padding:6px;border-radius:8px}.burger:hover{background:var(--hover)}
-.topbar .ct{flex:1;text-align:center;font-size:14px;color:var(--muted)}
+.topbar{height:54px;display:flex;align-items:center;gap:10px;padding:0 18px;border-bottom:1px solid var(--line);flex-shrink:0;background:rgba(7,9,13,.45);backdrop-filter:blur(14px)}
+.burger{background:none;border:none;color:var(--text);font-size:20px;cursor:pointer;padding:6px;border-radius:9px}.burger:hover{background:rgba(255,255,255,.07)}
+.topbar .ct{flex:1;text-align:center;font-size:14px;color:var(--muted);font-weight:500}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:600;border:1px solid var(--line);background:rgba(255,255,255,.04)}
 .messages{flex:1;overflow-y:auto}
-.welcome{max-width:780px;margin:0 auto;padding:8vh 24px 24px;text-align:center;animation:fadeUp .5s ease}
-@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
-.welcome h1{font-size:clamp(26px,5vw,40px);font-weight:700;margin-bottom:10px;background:linear-gradient(90deg,#10a37f,#3b82f6,#8b5cf6);background-size:200% auto;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;animation:gradtext 5s linear infinite}
-@keyframes gradtext{to{background-position:200% center}}
-.welcome p{color:var(--muted);font-size:16px;margin-bottom:28px}
-.sugg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;max-width:680px;margin:0 auto}
-.sugg{border:1px solid var(--border);border-radius:14px;padding:15px;cursor:pointer;font-size:13px;color:var(--muted);text-align:left;background:rgba(255,255,255,.03);transition:.2s}.sugg:hover{background:rgba(255,255,255,.08);transform:translateY(-2px);border-color:var(--green)}
-.msgrow{display:flex;gap:14px;padding:20px 24px;border-bottom:1px solid var(--border);animation:fadeUp .25s ease}
-.msgrow.user{background:rgba(255,255,255,.02)}.msgrow.ai{background:rgba(15,20,26,.6)}
-.msgrow .mb{max-width:800px;width:100%;margin:0 auto;font-size:15.5px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
-.msgrow .mb b{font-weight:600}.msgrow .mb .h{display:block;font-weight:700;font-size:17px;margin:16px 0 5px}.msgrow .mb .h:first-child{margin-top:0}
-.msgrow .ma{width:32px;height:32px;border-radius:9px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.3)}
-.msgrow.user .ma{background:linear-gradient(135deg,var(--green),#3b82f6);color:#fff}.msgrow .mb img{max-width:100%;border-radius:12px;margin-top:8px;box-shadow:0 6px 20px rgba(0,0,0,.4)}
-.typing span{display:inline-block;width:7px;height:7px;border-radius:50%;background:#999;margin-right:4px;animation:blink 1.2s infinite}.typing span:nth-child(2){animation-delay:.2s}.typing span:nth-child(3){animation-delay:.4s}
-@keyframes blink{0%,80%,100%{opacity:.2}40%{opacity:1}}
-.inputarea{padding:12px 22px;flex-shrink:0}
-.attach-preview{max-width:800px;margin:0 auto 8px;display:none;gap:8px;align-items:center;background:rgba(15,20,26,.8);border:1px solid var(--border);border-radius:14px;padding:7px}
-.attach-preview img{width:48px;height:48px;object-fit:cover;border-radius:8px}.attach-preview .an{flex:1;font-size:13px;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.attach-preview .rm{background:none;border:none;color:var(--muted);cursor:pointer;font-size:17px}
-.inputwrap{max-width:800px;margin:0 auto;display:flex;align-items:flex-end;gap:6px;background:rgba(21,28,36,.85);backdrop-filter:blur(12px);border:1px solid var(--border);border-radius:26px;padding:10px 12px;transition:.2s}.inputwrap:focus-within{border-color:var(--green);box-shadow:0 0 0 3px rgba(16,163,127,.15)}
+.welcome{max-width:820px;margin:0 auto;padding:7vh 24px 24px;text-align:center;animation:fadeUp .6s ease}
+@keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+.welcome h1{font-size:clamp(30px,6vw,48px);font-weight:800;margin-bottom:12px;background:linear-gradient(90deg,#22e0a8,#5b8cff,#a855f7,#ffb347,#22e0a8);background-size:300% auto;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;animation:gr 6s linear infinite;filter:drop-shadow(0 4px 30px rgba(34,224,168,.25))}
+@keyframes gr{to{background-position:300% center}}
+.welcome p{color:var(--muted);font-size:17px;margin-bottom:30px}
+.sugg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;max-width:720px;margin:0 auto}
+.sugg{border:1px solid var(--line);border-radius:16px;padding:16px;cursor:pointer;font-size:13px;color:var(--muted);text-align:left;background:var(--panel);backdrop-filter:blur(10px);transition:.2s}.sugg:hover{background:var(--panel2);transform:translateY(-3px);border-color:rgba(34,224,168,.5);box-shadow:0 10px 30px rgba(34,224,168,.12)}
+.msgrow{display:flex;gap:15px;padding:22px 26px;border-bottom:1px solid var(--line);animation:fadeUp .25s ease}
+.msgrow.user{background:rgba(255,255,255,.015)}.msgrow.ai{background:rgba(18,23,32,.4)}
+.msgrow .mb{max-width:820px;width:100%;margin:0 auto;font-size:15.5px;line-height:1.75;white-space:pre-wrap;word-break:break-word}
+.msgrow .mb b{font-weight:700}.msgrow .mb .h{display:block;font-weight:800;font-size:17px;margin:18px 0 6px}.msgrow .mb .h:first-child{margin-top:0}
+.msgrow .ma{width:34px;height:34px;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:700;box-shadow:0 6px 18px rgba(0,0,0,.35)}
+.msgrow.user .ma{background:conic-gradient(from 180deg,#22e0a8,#5b8cff);color:#04121c}.msgrow .mb img{max-width:100%;max-height:420px;border-radius:14px;margin-top:10px;box-shadow:0 10px 34px rgba(0,0,0,.5);border:1px solid var(--line)}
+.typing span{display:inline-block;width:7px;height:7px;border-radius:50%;background:#22e0a8;margin-right:5px;animation:blink 1.2s infinite}.typing span:nth-child(2){animation-delay:.2s}.typing span:nth-child(3){animation-delay:.4s}
+@keyframes blink{0%,80%,100%{opacity:.2;transform:scale(1)}40%{opacity:1;transform:scale(1.3)}}
+.inputarea{padding:14px 24px;flex-shrink:0}
+.attach-preview{max-width:820px;margin:0 auto 8px;display:none;gap:9px;align-items:center;background:var(--panel2);border:1px solid var(--line);border-radius:15px;padding:8px}
+.attach-preview img{width:52px;height:52px;object-fit:cover;border-radius:9px}.attach-preview .an{flex:1;font-size:13px;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.attach-preview .rm{background:none;border:none;color:var(--muted);cursor:pointer;font-size:18px}
+.inputwrap{max-width:820px;margin:0 auto;display:flex;align-items:flex-end;gap:6px;background:var(--panel2);backdrop-filter:blur(16px);border:1px solid var(--line);border-radius:28px;padding:10px 12px;transition:.2s}.inputwrap:focus-within{border-color:rgba(34,224,168,.6);box-shadow:0 0 0 4px rgba(34,224,168,.12),0 10px 40px rgba(0,0,0,.3)}
 textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:15px;resize:none;max-height:150px;line-height:1.5}
-.tbtn{background:none;border:none;color:var(--muted);width:34px;height:34px;border-radius:9px;cursor:pointer;font-size:16px}.tbtn:hover{background:rgba(255,255,255,.08)}
-.sendbtn{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--green),#0b8a6d);border:none;color:#fff;cursor:pointer;font-size:15px;flex-shrink:0;opacity:.5;transition:.2s}.sendbtn.on{opacity:1}.sendbtn:hover{transform:scale(1.08)}
-.foot{max-width:800px;margin:6px auto 0;text-align:center;font-size:11.5px;color:var(--muted)}.foot a{color:var(--green);text-decoration:none}
-.overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;display:flex;align-items:center;justify-content:center;padding:16px;opacity:0;visibility:hidden;transition:opacity .22s,visibility .22s}
+.tbtn{background:none;border:none;color:var(--muted);width:36px;height:36px;border-radius:10px;cursor:pointer;font-size:17px;transition:.15s}.tbtn:hover{background:rgba(255,255,255,.08);transform:translateY(-1px)}
+.sendbtn{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#22e0a8,#0d9d7a);border:none;color:#03140d;cursor:pointer;font-size:16px;flex-shrink:0;opacity:.45;transition:.2s}.sendbtn.on{opacity:1}.sendbtn:hover{transform:scale(1.1);box-shadow:0 6px 20px rgba(34,224,168,.4)}
+.foot{max-width:820px;margin:7px auto 0;text-align:center;font-size:11.5px;color:var(--muted)}.foot a{color:var(--accent);text-decoration:none}
+.overlay{position:fixed;inset:0;background:rgba(4,6,10,.78);backdrop-filter:blur(8px);z-index:100;display:flex;align-items:center;justify-content:center;padding:16px;opacity:0;visibility:hidden;transition:opacity .25s,visibility .25s}
 .overlay.show{opacity:1;visibility:visible}
-.modal{background:rgba(15,20,26,.95);backdrop-filter:blur(20px);border:1px solid var(--border);border-radius:18px;padding:28px;width:100%;max-width:420px;text-align:center;transform:scale(.95);opacity:0;transition:transform .24s,opacity .22s}.overlay.show .modal{transform:scale(1);opacity:1}
-.modal.wide{max-width:580px}
-.modal h2{margin-bottom:6px;font-size:20px}.modal p{color:var(--muted);font-size:14px;margin-bottom:16px}
-.tabs{display:flex;background:rgba(255,255,255,.05);border-radius:10px;padding:4px;margin-bottom:16px}
-.tab{flex:1;padding:9px;border-radius:8px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-weight:500;font-size:14px}.tab.active{background:rgba(255,255,255,.1);color:#fff}
-.inp{width:100%;padding:12px;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:15px;margin-bottom:10px;outline:none}.inp:focus{border-color:var(--green)}
-.btn{width:100%;padding:12px;border:none;border-radius:10px;background:linear-gradient(135deg,var(--green),#0b8a6d);color:#fff;font-weight:600;font-size:15px;cursor:pointer;margin-bottom:8px;transition:.2s}.btn:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(16,163,127,.35)}
-.btn.ghost{background:rgba(255,255,255,.06);color:var(--text);border:1px solid var(--border)}
-.btn.gold{background:linear-gradient(120deg,#ffd76a,#ffab40,#ff7a59);color:#1a1204;font-weight:700}
-.logo-xl{width:56px;height:56px;border-radius:15px;background:linear-gradient(135deg,#10a37f,#3b82f6);color:#fff;display:flex;align-items:center;justify-content:center;margin:0 auto 14px;box-shadow:0 8px 28px rgba(16,163,127,.4)}
-.row{display:flex;gap:8px;align-items:center;margin-bottom:10px}.row label{flex:1;text-align:left;font-size:14px;color:var(--muted)}
-.cookie{position:fixed;bottom:0;left:0;right:0;background:rgba(15,20,26,.92);backdrop-filter:blur(12px);border-top:1px solid var(--border);padding:14px 20px;z-index:200;display:flex;align-items:center;gap:14px;justify-content:space-between;transform:translateY(120%);transition:transform .35s}
-.cookie.show{transform:translateY(0)}.cookie p{font-size:13px;color:var(--muted)}.cookie .cb{background:var(--green);color:#fff;border:none;border-radius:10px;padding:9px 18px;cursor:pointer;font-weight:600;white-space:nowrap}
-.toast{position:fixed;top:18px;right:18px;background:rgba(15,20,26,.95);border:1px solid var(--border);border-radius:12px;padding:12px 16px;z-index:400;font-size:14px;transform:translateX(130%);transition:transform .3s}.toast.show{transform:translateX(0)}.toast.err{border-color:#e5484d}.toast.ok{border-color:var(--green)}
-::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:#2a3440;border-radius:4px}
-@media(max-width:768px){.sidebar{position:fixed;left:0;top:0;bottom:0;transform:translateX(-100%)}.sidebar.open{transform:translateX(0)}.msgrow{padding:15px}.cookie{flex-direction:column;align-items:flex-start}}
+.modal{background:var(--panel2);backdrop-filter:blur(26px) saturate(1.4);border:1px solid var(--line);border-radius:20px;padding:30px;width:100%;max-width:430px;text-align:center;transform:scale(.94) translateY(10px);opacity:0;transition:transform .28s,opacity .25s;box-shadow:0 30px 80px rgba(0,0,0,.6)}.overlay.show .modal{transform:scale(1) translateY(0);opacity:1}
+.modal.wide{max-width:600px}
+.modal h2{margin-bottom:7px;font-size:22px;font-weight:800}.modal p{color:var(--muted);font-size:14px;margin-bottom:18px}
+.tabs{display:flex;background:rgba(255,255,255,.05);border-radius:12px;padding:4px;margin-bottom:18px}
+.tab{flex:1;padding:10px;border-radius:9px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;font-size:14px;transition:.15s}.tab.active{background:linear-gradient(135deg,rgba(34,224,168,.2),rgba(91,140,255,.2));color:#fff;border:1px solid var(--line)}
+.inp{width:100%;padding:13px;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:11px;color:var(--text);font-size:15px;margin-bottom:11px;outline:none;transition:.15s}.inp:focus{border-color:rgba(34,224,168,.6);box-shadow:0 0 0 3px rgba(34,224,168,.12)}
+.btn{width:100%;padding:13px;border:none;border-radius:11px;background:linear-gradient(135deg,#22e0a8,#0d9d7a);color:#03140d;font-weight:800;font-size:15px;cursor:pointer;margin-bottom:9px;transition:.2s}.btn:hover{transform:translateY(-1px);box-shadow:0 8px 26px rgba(34,224,168,.35)}
+.btn.ghost{background:rgba(255,255,255,.06);color:var(--text);border:1px solid var(--line)}
+.btn.gold{background:linear-gradient(120deg,#ffe08a,#ffb347,#ff7a59);color:#241503;font-weight:800}
+.logo-xl{width:60px;height:60px;border-radius:16px;background:conic-gradient(from 180deg,#22e0a8,#5b8cff,#a855f7);color:#fff;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;box-shadow:0 10px 34px rgba(34,224,168,.4)}
+.row{display:flex;gap:9px;align-items:center;margin-bottom:11px}.row label{flex:1;text-align:left;font-size:14px;color:var(--muted)}
+.cookie{position:fixed;bottom:0;left:0;right:0;background:rgba(12,16,22,.92);backdrop-filter:blur(14px);border-top:1px solid var(--line);padding:15px 22px;z-index:200;display:flex;align-items:center;gap:14px;justify-content:space-between;transform:translateY(120%);transition:transform .4s}
+.cookie.show{transform:translateY(0)}.cookie p{font-size:13px;color:var(--muted)}.cookie .cb{background:linear-gradient(135deg,#22e0a8,#0d9d7a);color:#03140d;border:none;border-radius:11px;padding:10px 20px;cursor:pointer;font-weight:800;white-space:nowrap}
+.toast{position:fixed;top:18px;right:18px;background:rgba(16,21,30,.95);border:1px solid var(--line);border-radius:13px;padding:13px 18px;z-index:400;font-size:14px;transform:translateX(130%);transition:transform .35s;backdrop-filter:blur(12px);box-shadow:0 12px 40px rgba(0,0,0,.5)}.toast.show{transform:translateX(0)}.toast.err{border-color:var(--danger)}.toast.ok{border-color:var(--accent)}
+::-webkit-scrollbar{width:9px}::-webkit-scrollbar-thumb{background:#26303d;border-radius:5px}::-webkit-scrollbar-track{background:transparent}
+@media(max-width:768px){.sidebar{position:fixed;left:0;top:0;bottom:0;transform:translateX(-100%)}.sidebar.open{transform:translateX(0)}.msgrow{padding:16px}.cookie{flex-direction:column;align-items:flex-start}}
 </style></head><body>
-<div class="bg" id="bg"></div>
+<div class="scene" id="scene"><div class="glow g1" style="--tx:70px;--ty:50px"></div><div class="glow g2" style="--tx:-80px;--ty:-40px"></div><div class="glow g3" style="--tx:40px;--ty:-70px"></div><div class="glow g4" style="--tx:-50px;--ty:60px"></div></div>
 <div class="app">
 <aside class="sidebar" id="sidebar">
+<div class="brand"><div class="logo"><svg width="22" height="22" viewBox="0 0 100 100"><path d="M50 18 L82 82 H69 L61 63 H39 L31 82 H18 Z M45 53 H55 L50 40 Z" fill="#fff"/></svg></div><span class="nm">Awesome AI</span></div>
 <button class="new-chat" onclick="newChat()">✏️ Новый чат</button>
 <div class="chat-list" id="chatList"></div>
 <div class="side-foot">
@@ -698,10 +717,10 @@ textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-
 <button class="side-btn" onclick="openSettings()"><span class="ic" id="avBox">?</span><span id="uName">Пользователь</span></button>
 </div></aside>
 <div class="main">
-<div class="topbar"><button class="burger" onclick="toggleSidebar()">☰</button><div class="ct" id="ctTitle">Новый чат · <span id="uStatus" style="font-size:12px"></span></div></div>
+<div class="topbar"><button class="burger" onclick="toggleSidebar()">☰</button><div class="ct" id="ctTitle">Новый чат · <span class="pill" id="uStatus"></span></div></div>
 <div class="messages" id="messages">
 <div class="welcome" id="welcome">
-<h1>Чем я могу помочь?</h1><p>Твой умный собеседник нового поколения</p>
+<h1>Чем я могу помочь?</h1><p>Твой самый современный ИИ-собеседник нового поколения</p>
 <div class="sugg-grid">
 <button class="sugg" onclick="send('Объясни простыми словами квантовые вычисления')">🔬 Объясни просто</button>
 <button class="sugg" onclick="send('Напиши код на Python для бота')">💻 Напиши код</button>
@@ -726,7 +745,7 @@ textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-
 
 <div class="overlay" id="authOverlay">
 <div class="modal">
-<div class="logo-xl"><svg width="34" height="34" viewBox="0 0 100 100"><path d="M50 20 L80 80 H68 L61 64 H39 L32 80 H20 Z M45 54 H55 L50 42 Z" fill="#fff"/></svg></div>
+<div class="logo-xl"><svg width="36" height="36" viewBox="0 0 100 100"><path d="M50 20 L80 80 H68 L61 64 H39 L32 80 H20 Z M45 54 H55 L50 42 Z" fill="#fff"/></svg></div>
 <div class="tabs"><button class="tab active" id="tabLogin" onclick="switchTab('login')">Вход</button><button class="tab" id="tabReg" onclick="switchTab('reg')">Регистрация</button></div>
 <h2 id="authTitle">Вход</h2><p id="authSub">Войди, чтобы продолжить</p>
 <div id="regWrap" style="display:none"><input class="inp" id="regName" placeholder="Имя"></div>
@@ -738,7 +757,7 @@ textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-
 <div class="overlay" id="premOverlay">
 <div class="modal">
 <div class="logo-xl">💎</div><h2>Awesome AI Premium</h2>
-<p>Безлимит запросов, приоритет, доступ ко всем моделям и эксклюзивные функции!</p>
+<p>Безлимит запросов, приоритетный доступ, все модели и эксклюзивные функции!</p>
 <a class="btn gold" style="display:block;text-decoration:none;text-align:center" href="https://t.me/flidges" target="_blank">💬 Написать @flidges и купить</a>
 <button class="btn ghost" onclick="closeOv('premOverlay')">Закрыть</button></div></div>
 
@@ -759,7 +778,7 @@ textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-
 <script>
 let uid=null,cid=null,sending=false,mode='login',attachedImage=null;
 const $=id=>document.getElementById(id);
-function toast(t,ty){const e=document.createElement('div');e.className='toast '+(ty||'');e.textContent=t;document.body.appendChild(e);requestAnimationFrame(()=>e.classList.add('show'));setTimeout(()=>{e.classList.remove('show');setTimeout(()=>e.remove(),300)},3000)}
+function toast(t,ty){const e=document.createElement('div');e.className='toast '+(ty||'');e.textContent=t;document.body.appendChild(e);requestAnimationFrame(()=>e.classList.add('show'));setTimeout(()=>{e.classList.remove('show');setTimeout(()=>e.remove(),320)},3200)}
 async function api(u,m,b){try{const o={method:m||'GET',headers:{'Content-Type':'application/json'}};if(b)o.body=JSON.stringify(b);const r=await fetch(u,o);const t=await r.text();try{return JSON.parse(t)}catch(e){return{ok:false,error:'Сервер ['+r.status+']'}}}catch(e){return{ok:false,error:'Нет соединения'}}}
 function toggleSidebar(){const s=$('sidebar');if(innerWidth<=768)s.classList.toggle('open');else s.classList.toggle('closed')}
 function openOv(id){$(id).classList.add('show')}function closeOv(id){$(id).classList.remove('show')}
@@ -768,7 +787,7 @@ function switchTab(m){mode=m;$('tabLogin').className='tab'+(m==='login'?' active
 async function submitAuth(){const login=$('authLogin').value.trim(),pw=$('authPass').value;if(!login||!pw){toast('Заполни логин и пароль','err');return}const body=mode==='reg'?{login,password:pw,name:$('regName').value.trim()}:{login,password:pw};const r=await api(mode==='reg'?'/api/register':'/api/login','POST',body);if(r.ok){uid=login;closeOv('authOverlay');toast('Добро пожаловать!','ok');init()}else toast(r.error||'Ошибка','err')}
 async function logout(){await api('/api/logout','POST');location.reload()}
 async function init(){const me=await api('/api/me');if(me.ok){uid=me.user_id;$('authOverlay').classList.remove('show');if(me.avatar)$('avBox').innerHTML='<img style="width:100%;height:100%;object-fit:cover" src="'+me.avatar+'">';else $('avBox').textContent=String(me.name||'?').slice(0,1).toUpperCase();$('uName').textContent=me.name||'Пользователь';await loadChats();await checkStatus()}else openOv('authOverlay')}
-async function checkStatus(){const r=await api('/api/status');if(r.ok){$('uStatus').textContent=r.status_text+' · Ур.'+r.level;if(r.premium)$('premBtn').textContent='💎 Premium активен';else $('premBtn').textContent='💎 Купить Premium'}}
+async function checkStatus(){const r=await api('/api/status');if(r.ok){$('uStatus').textContent=r.status_text+' · Ур.'+r.level;const b=$('premBtn');if(r.premium){b.textContent='💎 Premium активен';b.classList.add('act')}else{b.textContent='💎 Купить Premium';b.classList.remove('act')}}}
 async function loadChats(){const r=await api('/api/chats');if(!r.ok)return;const l=$('chatList');l.innerHTML='';(r.chats||[]).forEach(c=>{const d=document.createElement('div');d.className='chat-item'+(c.id===cid?' active':'');d.innerHTML='💬<span class="t">'+esc(c.title||'Чат')+'</span><button class="del" onclick="delChat('+c.id+',event)">✕</button>';d.onclick=()=>openChat(c);l.appendChild(d)})}
 function openChat(c){cid=c.id;$('messages').innerHTML='';$('welcome').style.display='none';$('ctTitle').textContent=c.title||'Чат';(c.messages||[]).forEach(m=>addMsg(m.role,m.content,m.image));if(innerWidth<=768)toggleSidebar()}
 async function newChat(){const r=await api('/api/chat/new','POST');if(r.ok){cid=r.chat_id;$('messages').innerHTML='';$('welcome').style.display='';$('ctTitle').textContent='Новый чат';loadChats()}}
@@ -789,11 +808,11 @@ function openSupport(){openOv('supportOverlay')}
 async function openSettings(){const r=await api('/api/profile');if(r.ok){$('setName').value=r.name||'';$('setTheme').value=r.theme||'dark';$('profInfo').innerHTML='ID: <b>'+esc(r.user_id)+'</b><br>'+(r.premium?'💎 Premium до '+esc(r.premium_expires):'🔓 Free · 50 запросов/день')+'<br>⭐ Уровень '+r.level+' · XP '+r.xp}openOv('settingsOverlay')}
 async function saveSettings(){const r=await api('/api/settings','POST',{name:$('setName').value.trim()||undefined,theme:$('setTheme').value});if(r.ok){closeOv('settingsOverlay');toast('Сохранено','ok');init()}}
 function acceptCookie(){$('cookie').classList.remove('show');try{localStorage.setItem('sc_cookie','1')}catch(e){}}
-function makeStars(){const bg=$('bg');for(let i=0;i<45;i++){const s=document.createElement('div');s.className='star';s.style.left=Math.random()*100+'%';s.style.top=Math.random()*100+'%';s.style.animationDelay=(Math.random()*3)+'s';bg.appendChild(s)}}
-document.addEventListener('DOMContentLoaded',()=>{makeStars();init();try{if(!localStorage.getItem('sc_cookie'))setTimeout(()=>$('cookie').classList.add('show'),800)}catch(e){}});
+function buildScene(){const s=$('scene');for(let i=0;i<60;i++){const st=document.createElement('div');st.className='star';const sz=(Math.random()*2+1);st.style.width=sz+'px';st.style.height=sz+'px';st.style.left=Math.random()*100+'%';st.style.top=Math.random()*100+'%';st.style.animationDelay=(Math.random()*3)+'s';st.style.animationDuration=(Math.random()*3+2)+'s';s.appendChild(st)}for(let i=0;i<6;i++){const g=document.createElement('div');g.className='gridline';g.style.top=(i*17)+'%';g.style.animationDelay=(i*0.4)+'s'}}
+document.addEventListener('DOMContentLoaded',()=>{buildScene();init();try{if(!localStorage.getItem('sc_cookie'))setTimeout(()=>$('cookie').classList.add('show'),900)}catch(e){}});
 </script></body></html>"""
 
 if __name__ == '__main__':
-    print("AWESOME AI — PRO ULTRA (PostgreSQL relaxdev)")
+    print("AWESOME AI — NEXUS (PostgreSQL relaxdev)")
     port = int(os.getenv("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
