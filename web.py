@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AWESOME AI — ULTIMATE PRO: PostgreSQL (relaxdev), Premium (лимит 50), фото-анализ, 5 провайдеров, много функций"""
+"""AWESOME AI — ULTIMATE PRO: PostgreSQL (relaxdev), Premium, фото, 5 провайдеров, долгая память, 30+ механических функций"""
 import os, re, io, time, json, base64, urllib.parse, hashlib, random, html, uuid as _uuid
 from datetime import datetime, timedelta, timezone
 import requests, urllib3
@@ -36,9 +36,9 @@ DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 OWNER_LOGIN, OWNER_PASSWORD = "admin", "qawsedrf2346"
 FREE_LIMIT = 50
-MAX_HISTORY = 40
-MEM_LIMIT = 40
-GIGA_TIMEOUT, YGPT_TIMEOUT, SEARCH_TIMEOUT = 35, 30, 5
+MAX_HISTORY = 60
+MEM_LIMIT = 100
+GIGA_TIMEOUT, YGPT_TIMEOUT, SEARCH_TIMEOUT = 40, 35, 6
 
 MOSCOW_TZ = timezone(timedelta(hours=3))
 def gm(): return datetime.now(MOSCOW_TZ)
@@ -51,7 +51,6 @@ def fmt_date(s):
 def hash_pw(p): return hashlib.sha256(p.encode()).hexdigest()
 def get_db(): return psycopg2.connect(DATABASE_URL)
 
-# ================= БАЗА =================
 def init_db():
     conn = get_db(); cur = conn.cursor()
     def ex(sql):
@@ -94,7 +93,6 @@ def init_db():
     cur.close(); conn.close()
 init_db()
 
-# ================= АККАУНТЫ =================
 def get_user(uid):
     conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute("SELECT * FROM users WHERE user_id=%s", (str(uid),)); row=cur.fetchone()
@@ -153,7 +151,6 @@ def add_xp(uid, amt):
     u=get_user(uid) or {}; xp=int(u.get('xp',0) or 0)+int(amt)
     upd(uid, xp=xp, level=1+xp//100)
 
-# ================= ПАМЯТЬ =================
 def get_memory(uid, limit=MEM_LIMIT):
     try:
         conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -183,7 +180,6 @@ def extract_facts(uid, text):
         if m: facts.append("Хобби: "+m.group(1).strip())
     for f in facts: remember(uid,f)
 
-# ================= ЧАТЫ =================
 def create_chat(uid, title="Новый чат"):
     conn=get_db(); cur=conn.cursor()
     cur.execute("INSERT INTO chats_web(user_id,title,created_at,pinned) VALUES(%s,%s,%s,0) RETURNING id",(str(uid),title,now_iso()))
@@ -203,7 +199,7 @@ def get_msgs(cid):
 def hist(cid):
     m=get_msgs(cid)
     if len(m)<=MAX_HISTORY: return m or []
-    return (m[:8]+m[-MAX_HISTORY+8:]) if len(m)>8 else m
+    return (m[:10]+m[-MAX_HISTORY+10:]) if len(m)>10 else m
 def set_title(cid,t):
     conn=get_db(); cur=conn.cursor(); cur.execute("UPDATE chats_web SET title=%s WHERE id=%s",(t[:50],int(cid))); conn.commit(); cur.close(); conn.close()
 def del_chat(uid,cid):
@@ -212,7 +208,6 @@ def del_chat(uid,cid):
     cur.execute("DELETE FROM chats_web WHERE id=%s AND user_id=%s",(int(cid),str(uid)))
     conn.commit(); cur.close(); conn.close()
 
-# ================= НЕЙРОСЕТЬ (5 провайдеров) =================
 tok=None; tok_t=0
 def get_tok():
     global tok, tok_t
@@ -222,18 +217,18 @@ def get_tok():
             r=requests.post("https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
                 headers={"Content-Type":"application/x-www-form-urlencoded","Accept":"application/json",
                          "RqUID":str(_uuid.uuid4()),"Authorization":"Basic "+GIGACHAT_AUTH_KEY},
-                data="scope=GIGACHAT_API_PERS",timeout=12,verify=False)
+                data="scope=GIGACHAT_API_PERS",timeout=14,verify=False)
             if r.status_code==200:
                 j=r.json()
                 if j.get("access_token"): tok=j["access_token"]; tok_t=time.time(); return tok
         except Exception: pass
         time.sleep(0.7)
     tok=None; return None
-def giga(hlist, sysp, max_tok=2000):
+def giga(hlist, sysp, max_tok=2200):
     try:
         t=get_tok()
         if not t: return None
-        msgs=[{"role":"system","content":sysp[:3000]}]+[{"role":h.get("role","user"),"content":(h.get("content") or "")[:1000]} for h in hlist[-14:] if h.get("role") in ("user","assistant")]
+        msgs=[{"role":"system","content":sysp[:3000]}]+[{"role":h.get("role","user"),"content":(h.get("content") or "")[:1200]} for h in hlist[-16:] if h.get("role") in ("user","assistant")]
         r=requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
             headers={"Authorization":"Bearer "+t,"Content-Type":"application/json","Accept":"application/json"},
             json={"model":"GigaChat-Pro","messages":msgs,"temperature":0.85,"max_tokens":max_tok},timeout=GIGA_TIMEOUT,verify=False)
@@ -246,17 +241,17 @@ def ygpt(text, sysp):
     try:
         r=requests.post("https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
             headers={"Authorization":"Api-Key "+YANDEX_API_KEY,"Content-Type":"application/json"},
-            json={"modelUri":"gpt://"+FOLDER_ID+"/yandexgpt/latest","completionOptions":{"temperature":0.7,"maxTokens":700,"stream":False},
+            json={"modelUri":"gpt://"+FOLDER_ID+"/yandexgpt/latest","completionOptions":{"temperature":0.7,"maxTokens":900,"stream":False},
                   "messages":[{"role":"system","text":sysp[:1500]},{"role":"user","text":text}]},timeout=YGPT_TIMEOUT)
         if r.status_code==200:
             try: return r.json()["result"]["alternatives"][0]["message"]["text"]
             except Exception: return None
     except Exception: pass
     return None
-def openai_call(hlist, sysp, max_tok=1200):
+def openai_call(hlist, sysp, max_tok=1400):
     if not OPENAI_API_KEY: return None
     try:
-        msgs=[{"role":"system","content":sysp[:3000]}]+[{"role":h.get("role","user"),"content":(h.get("content") or "")[:1000]} for h in hlist[-14:] if h.get("role") in ("user","assistant")]
+        msgs=[{"role":"system","content":sysp[:3000]}]+[{"role":h.get("role","user"),"content":(h.get("content") or "")[:1200]} for h in hlist[-16:] if h.get("role") in ("user","assistant")]
         r=requests.post("https://api.openai.com/v1/chat/completions",
             headers={"Authorization":"Bearer "+OPENAI_API_KEY,"Content-Type":"application/json"},
             json={"model":"gpt-4o-mini","messages":msgs,"temperature":0.85,"max_tokens":max_tok},timeout=GIGA_TIMEOUT)
@@ -265,10 +260,10 @@ def openai_call(hlist, sysp, max_tok=1200):
             except Exception: return None
     except Exception: pass
     return None
-def deepseek_call(hlist, sysp, max_tok=1600):
+def deepseek_call(hlist, sysp, max_tok=1800):
     if not DEEPSEEK_API_KEY: return None
     try:
-        msgs=[{"role":"system","content":sysp[:3000]}]+[{"role":h.get("role","user"),"content":(h.get("content") or "")[:1000]} for h in hlist[-14:] if h.get("role") in ("user","assistant")]
+        msgs=[{"role":"system","content":sysp[:3000]}]+[{"role":h.get("role","user"),"content":(h.get("content") or "")[:1200]} for h in hlist[-16:] if h.get("role") in ("user","assistant")]
         r=requests.post("https://api.deepseek.com/chat/completions",
             headers={"Authorization":"Bearer "+DEEPSEEK_API_KEY,"Content-Type":"application/json"},
             json={"model":"deepseek-chat","messages":msgs,"temperature":0.85,"max_tokens":max_tok},timeout=GIGA_TIMEOUT)
@@ -280,8 +275,8 @@ def deepseek_call(hlist, sysp, max_tok=1600):
 def gemini_call(text, sysp):
     if not GEMINI_API_KEY: return None
     try:
-        body={"contents":[{"role":"user","parts":[{"text":sysp[:3000]+"\n\nЗадача пользователя:\n"+text}]}],
-              "generationConfig":{"temperature":0.8,"maxOutputTokens":1400}}
+        body={"contents":[{"role":"user","parts":[{"text":sysp[:3000]+"\n\nЗадача:\n"+text}]}],
+              "generationConfig":{"temperature":0.8,"maxOutputTokens":1600}}
         r=requests.post("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key="+GEMINI_API_KEY,
             headers={"Content-Type":"application/json"},json=body,timeout=GIGA_TIMEOUT)
         if r.status_code==200:
@@ -301,7 +296,7 @@ def describe_img(b64):
                 {"role":"user","content":[
                     {"type":"text","text":"Подробно опиши, что изображено на этой фотографии."},
                     {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,"+b64}}
-                ]}],"temperature":0.6,"max_tokens":800}
+                ]}],"temperature":0.6,"max_tokens":900}
             r=requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
                 headers={"Authorization":"Bearer "+t,"Content-Type":"application/json","Accept":"application/json"},
                 json=payload,timeout=GIGA_TIMEOUT,verify=False)
@@ -314,12 +309,12 @@ def describe_img(b64):
         time.sleep(1.0)
     return None
 
-SUPER="""ТЫ — AWESOME AI ULTIMATE, самая современная и мощная нейросеть уровня ChatGPT.
+SUPER="""ТЫ — AWESOME AI ULTIMATE, самая мощная нейросеть уровня ChatGPT.
 РОССИЯ, МОСКВА. Сегодня: {d}, время: {t} (МСК).
 {memory}
-СТИЛЬ: живой, тёплый, глубокий интеллект с лёгким юмором. Конкретика, цифры, примеры, структура.
-ФОРМАТ: разделы **1. Название**, важное **жирным**, эмодзи где уместно.
-Если дано описание изображения — отвечай по нему подробно."""
+СТИЛЬ: живой, тёплый, глубокий интеллект. Конкретика, цифры, структура.
+ФОРМАТ: разделы **1. Название**, важное **жирным**, эмодзи.
+Если дано описание изображения — отвечай по нему."""
 
 def smart_answer(uid, text, history, img_desc=None, doc=None, has_img=False):
     mem=get_memory(uid)
@@ -331,9 +326,8 @@ def smart_answer(uid, text, history, img_desc=None, doc=None, has_img=False):
     try: extract_facts(uid, text)
     except Exception: pass
     if has_img and not text.strip() and not img_desc:
-        return "📷 Вижу, ты прислал изображение, но сервис анализа сейчас недоступен (внешний трафик, похоже, заблокирован). Опиши словами, что на нём — и я сразу помогу!"
+        return "📷 Вижу фото, но сервис анализа изображений сейчас недоступен (хостинг блокирует внешний трафик к vision-модели). Опиши словами, что на нём — и я помогу!"
     hfull=history+[{"role":"user","content":text or "Опиши изображение" if has_img else (text or "Опиши")}]
-    # Цепочка: GigaChat → YandexGPT → Gemini → ChatGPT → DeepSeek
     res=None
     a=giga(hfull, sp)
     if a and len(a)>4: res=a
@@ -351,46 +345,98 @@ def smart_answer(uid, text, history, img_desc=None, doc=None, has_img=False):
                     if d and len(d)>4: res=d
     if res: return res
     if img_desc: return "Я вижу это так:\n\n"+img_desc
-    # ==== ЛОКАЛЬНЫЕ НАВЫКИ (работают всегда) ====
-    if "привет" in tl or "здравств" in tl or "хай" in tl or tl in ["ку","прив"]:
-        return "Привет! ✨ Рад тебя видеть. Я умею очень много: идеи, планы, рецепты, код, перевод, погода, курсы, викторины, стихи, тренировки и не только. Что попробуем?"
-    if ("идеи" in tl or "придумай" in tl or "мозговой штурм" in tl) and ("назван" in tl or "для" in tl or "как назвать" in tl):
-        topic=re.sub(r'(придумай|идеи|для|мозговой штурм|название|названия|как назвать|проекта|компании|кофейн|магазин)','',tl).strip() or "проект"
-        return "🎯 Идеи для «"+topic+"»:\n1. "+topic.title()+" Pro\n2. Neo"+topic.title()+"\n3. "+topic.title()+" 360\n4. Ultima "+topic.title()+"\n5. Smart"+topic.title()+"\n6. "+topic.title()+" Prime\n7. Eco"+topic.title()+"\n8. Vision "+topic.title()+"\n9. Nova "+topic.title()+"\n10. Aura "+topic.title()+""
-    if "резюм" in tl or "кратко" in tl or "изложи" in tl or "сократи" in tl:
-        t2=re.sub(r'(резюме|кратко|изложи|сократи|текст|пожалуйста)','',text,flags=re.I).strip()
-        words=t2.split()
-        core=words[:40] if len(words)>40 else words
-        if len(words)>40: core.append("…(это краткая выжимка)")
-        return "📝 Краткое содержание:\n"+(" ".join(core) if core else "Пришли текст для сжатия.")
-    if "викторин" in tl or "тест" in tl:
-        q=random.choice([
-            "Вопрос 1: Столица Франции?\nА) Берлин  Б) Париж  В) Мадрид",
-            "Вопрос 1: 2 + 2 × 2 = ?\nА) 6  Б) 8  В) 4",
-            "Вопрос 1: Какая планета называется «красной»?\nА) Венера  Б) Марс  В) Юпитер"])
-        return "🎮 Мини-викторина!\n"+q+"\n\n(Ответь буквой — проверю!)"
-    if "рецепт" in tl or "блюдо" in tl or "приготов" in tl:
-        ing=re.sub(r'(рецепт|блюдо|приготовь|из|что можно)','',tl).strip() or "курица"
-        return "🍳 Рецепт из «"+ing+"»:\n**1. Ингредиенты**: "+ing+", лук, чеснок, соль, масло\n**2. Шаги**: обжарить → добавить специи → тушить 15 мин → подавать с зеленью.\nПриятного аппетита! 😋"
-    if "трениров" in tl or "упражнен" in tl or "спорт" in tl:
-        return "💪 Тренировка на сегодня:\n1. Разминка — 5 мин\n2. Приседания — 3×15\n3. Отжимания — 3×12\n4. Планка — 3×40 сек\n5. Выпады — 3×10\n6. Растяжка — 5 мин\nНачнём с лёгкого! 🔥"
-    if "план" in tl and ("день" in tl or "неделю" in tl or "расписани" in tl):
-        return "📅 План на день:\n**Утро (7:00)**: зарядка, завтрак\n**День (9:00-13:00)**: главные задачи\n**Обед (13:00)**: отдых\n**Вечер (15:00-19:00)**: работа/учёба\n**Ночь (21:00)**: отдых, сон 😴\nХочешь — распишу подробнее!"
-    if "перепиши" in tl or "перефразируй" in tl or "улучши текст" in tl:
-        return "✍️ Готов перефразировать. Пришли текст — сделаю его живее и грамотнее (можно деловой или разговорный стиль)."
-    if "собеседован" in tl or "интервью" in tl or "ваканси" in tl:
-        return "💼 Тренажёр собеседования:\n1. Расскажи о себе\n2. Твои сильные стороны?\n3. Почему именно ты?\n4. Как решаешь конфликты?\n5. Где видишь себя через 3 года?\nОтвечай — я дам фидбек!"
-    if "стих" in tl or "поэм" in tl or "рифм" in tl:
-        return "🌙 Стихотворение:\nВ тишине ночной, средь звёзд,\nЯ дарю тебе тепло грёз.\nПусть мечты твои взлетят,\nИ успехи в дверь стучат! ✨"
-    if "фильм" in tl or "сериал" in tl or "посмотреть" in tl:
-        return "🎬 Под настроение советую:\n• «Интерстеллар» — космос и эмоции\n• «В погоне за счастьем» — мотивация\n• «Шерлок» — умные расследования\n• «Бумажный дом» — динамика\nСкажи жанр — подберу точнее!"
-    if "музык" in tl or "песен" in tl or "трек" in tl:
-        return "🎵 Под настроение:\n• Lo-fi для учёбы\n• Электроника для энергии\n• Джаз для вечера\n• Рок для драйва\nКакой вайб? Подберу!"
-    if "интересный факт" in tl or "расскажи что-то" in tl or "удиви" in tl:
-        return "🤯 Факт: Осьминог имеет три сердца и голубую кровь! А ещё банан технически — ягода. Хочешь ещё? 😄"
-    if "помоги" in tl or "посоветуй" in tl:
-        return "🤝 Конечно, помогу! Напиши, что случилось, и я предложу конкретное решение."
-    if "время" in tl and ("сейчас" in tl or "сколько" in tl or "час" in tl):
+    # ==== 30+ МЕХАНИЧЕСКИХ ФУНКЦИЙ ====
+    if re.search(r'\d+\s*[\+\-\*\/\(\)]\s*\d+', tl) and ("посчитай" in tl or "сколько будет" in tl or "вычисли" in tl or re.search(r'[0-9]+\s*[\/\*\+\-]\s*[0-9]',tl)):
+        try:
+            expr=re.sub(r'[^0-9+\-*/(). ]','',text)
+            if re.search(r'\d+\s*[\/]\s*0',expr): return "На ноль делить нельзя! 😅"
+            resx=eval(expr)
+            if isinstance(resx,float) and resx.is_integer(): resx=int(resx)
+            return "🧮 Результат: **"+str(resx)+"**"
+        except Exception: return "Не понял пример. Напиши как: «сколько будет 12*4+8»"
+    unit_conv=[(('км в мили','мили в км'),0.621371),(('кг в фунты','фунты в кг'),2.20462),
+               (('метры в футы','футы в метры'),3.28084),(('литры в галлоны','галлоны в литры'),0.264172),
+               (('градусы в радианы','радианы в градусы'),0.0174533)]
+    for words,factor in unit_conv:
+        if any(w in tl for w in words):
+            m=re.search(r'([\d.]+)',tl)
+            if m:
+                try:
+                    val=float(m.group(1))*factor
+                    out=words[0].split(' в ')[1] if ' в ' in words[0] else words[0]
+                    return "📏 **"+m.group(1)+"** → **"+str(round(val,2))+"** "+out
+                except Exception: return "Не понял число."
+    if "парол" in tl or "password" in tl:
+        ln=re.search(r'(\d+)',tl); length=int(ln.group(1)) if ln else 12; length=max(6,min(length,32))
+        chars="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*"
+        return "🔐 Пароль: `"+"".join(random.choice(chars) for _ in range(length))+"` (длина "+str(length)+")"
+    if "кубик" in tl: return "🎲 Кубик: **"+str(random.randint(1,6))+"**"
+    if "монет" in tl or "орел" in tl or "решка" in tl: return "🪙 Выпало: **"+random.choice(["Орёл","Решка"])+"**"
+    if ("случайное число" in tl or "рандом" in tl):
+        m=re.findall(r'(\d+)\s*(?:до|из)\s*(\d+)',tl)
+        if m: return "🎯 Случайное: **"+str(random.randint(int(m[0][0]),int(m[0][1])))+"**"
+        return "🎲 Случайное: **"+str(random.randint(1,100))+"**"
+    if "таймер" in tl or "сколько секунд" in tl:
+        m=re.search(r'(\d+)\s*(минут|секунд|часов)',tl)
+        if m:
+            n=int(m.group(1)); unit=m.group(2)
+            sec=n*(60 if unit.startswith('мин') else 3600 if unit.startswith('час') else 1)
+            return "⏱️ "+str(n)+" "+unit+" = **"+str(sec)+"** секунд."
+    if "задач" in tl or "to-do" in tl or "список дел" in tl:
+        if "добавь" in tl or "запиши" in tl:
+            task=re.sub(r'(добавь|запиши|в список|задач|задачу|to-do|дел)','',tl).strip()[:200]
+            if len(task)>2: remember(uid,"Задача: "+task); return "✅ Добавил задачу: "+task
+        tasks=[f for f in get_memory(uid,50) if f.startswith("Задача:")]
+        return "📋 Задачи:\n"+"\n".join("• "+f.replace("Задача: ","") for f in tasks) if tasks else "Задач нет. Напиши «добавь задачу купить молоко»."
+    if "дней до" in tl or "дней осталось" in tl:
+        m=re.search(r'(\d{1,2})[.\/-](\d{1,2})(?:[.\/-](\d{2,4}))?',tl)
+        if m:
+            try:
+                dd=datetime(int(m.group(3) or gm().year),int(m.group(2)),int(m.group(1)))
+                days=(dd.replace(tzinfo=MOSCOW_TZ)-gm()).days
+                return "📆 Осталось **"+str(days)+"** дн." if days>=0 else "Дата прошла "+str(-days)+" дн. назад."
+            except: return "Формат: «сколько дней до 25.12»"
+    if "процент" in tl or "%" in tl:
+        m=re.search(r'(\d+(?:[.,]\d+)?)\s*%?\s*(?:от|из)\s*(\d+(?:[.,]\d+)?)',tl.replace(',','.'))
+        if m:
+            try:
+                p=float(m.group(1)); total=float(m.group(2))
+                return "🧮 "+m.group(1)+"% от "+m.group(2)+" = **"+str(round(total*p/100,2))+"**"
+            except: pass
+    if "квадрат" in tl or "в квадрате" in tl:
+        m=re.search(r'(\d+)',tl)
+        if m: return "🧮 "+m.group(1)+"² = **"+str(int(m.group(1))**2)+"**"
+    if "корень" in tl:
+        m=re.search(r'(\d+)',tl)
+        if m: return "√"+m.group(1)+" ≈ **"+str(round(float(m.group(1))**0.5,3))+"**"
+    if "степень" in tl or "в степени" in tl:
+        m=re.search(r'(\d+)\s*(?:\^|в степени)\s*(\d+)',tl)
+        if m: return "🧮 "+m.group(1)+"^"+m.group(2)+" = **"+str(int(m.group(1))**int(m.group(2)))+"**"
+    if "бинар" in tl or "в двоичн" in tl:
+        m=re.search(r'(\d+)',tl)
+        if m: return "💾 "+m.group(1)+" в двоичной = **"+bin(int(m.group(1)))[2:]+"**"
+    if "в шестнадцат" in tl or "hex" in tl:
+        m=re.search(r'(\d+)',tl)
+        if m: return "🔢 "+m.group(1)+" в hex = **"+hex(int(m.group(1)))[2:].upper()+"**"
+    if "факториал" in tl:
+        m=re.search(r'(\d+)',tl)
+        if m:
+            n=int(m.group(1)); f=1
+            for i in range(2,n+1): f*=i
+            return "➗ "+m.group(1)+"! = **"+str(f)+"**"
+    if "среднее" in tl or "avg" in tl:
+        nums=re.findall(r'(\d+(?:[.,]\d+)?)',tl.replace(',','.'))
+        if len(nums)>=2:
+            vals=[float(x) for x in nums]
+            return "📊 Среднее = **"+str(round(sum(vals)/len(vals),2))+"**"
+    if "сумму" in tl or "сложи" in tl:
+        nums=re.findall(r'(\d+(?:[.,]\d+)?)',tl.replace(',','.'))
+        if len(nums)>=2:
+            vals=[float(x) for x in nums]
+            return "➕ Сумма = **"+str(round(sum(vals),2))+"**"
+    if "привет" in tl or "здравств" in tl or tl in ["ку","хай","прив"]:
+        return "Привет! ✨ Умею считать, конвертировать, генерить пароли, бросать кубик, считать дни, вести задачи, проценты, квадраты, корни, степени, бинар/hex, факториалы, среднее и суммы. Что делаем?"
+    if "время" in tl and ("сейчас" in tl or "сколько" in tl):
         return "Сейчас "+gm().strftime('%H:%M:%S')+" (Москва), дата: "+gdate()+"."
     if "дата" in tl or "какое сегодня число" in tl:
         return "Сегодня "+gdate()+", "+['понедельник','вторник','среда','четверг','пятница','суббота','воскресенье'][gm().weekday()]+"."
@@ -417,14 +463,8 @@ def smart_answer(uid, text, history, img_desc=None, doc=None, has_img=False):
     if "что ты помнишь" in tl or "память" in tl:
         return "Что я помню о тебе:\n"+"\n".join("• "+f for f in mem) if mem else "Пока ничего. Скажи «запомни...»."
     if "кто ты" in tl or "что ты умеешь" in tl:
-        return "Я AWESOME AI ULTIMATE ✨\n**Что умею**:\n1. Общаюсь и анализирую фото\n2. Помню о тебе\n3. Идеи и мозговой штурм\n4. Резюме текстов\n5. Викторины и тесты\n6. Рецепты и тренировки\n7. Планы и расписания\n8. Перефразирование\n9. Стихи и развлечения\n10. Погода/валюты/крипта\n11. Перевод\n12. Код\n\nЧто пробуем?"
-    if re.search(r'\d+\s*[\+\-\*\/]\s*\d+', tl):
-        try:
-            expr=re.sub(r'[^0-9+\-*/(). ]','',tl); resx=eval(expr); return "Результат: "+str(resx)
-        except Exception: return "Не понял выражение. Например: 2+2*3"
-    if "режим" in tl or "стань" in tl:
-        return "Режимы: «Будь моим юристом», «Психологом», «Учителем», «Кодером», «Маркетологом»."
-    return "Обрабатываю... Напиши чуть подробнее, что нужно, и я дам лучший ответ! Например: «придумай название для кофейни», «составь план на день», «рецепт из курицы», «погода в Москве»."
+        return "Я AWESOME AI ULTIMATE ✨\n**Механические функции**:\n1. Калькулятор\n2. Конвертер единиц\n3. Пароли\n4. Кубик/монета/рандом\n5. Таймер/секунды\n6. Задачи (todo)\n7. Дни до даты\n8. Проценты\n9. Квадраты/корни/степени\n10. Бинар/hex\n11. Факториал\n12. Среднее/сумма\n13. Память\n14. Погода/валюты/крипта\n15. Перевод\n\nЧто пробуем?"
+    return "Обрабатываю... Напиши конкретно. Примеры: «посчитай 15% от 200», «переведи 5 км в мили», «сгенерируй пароль 16», «брось кубик», «сколько дней до 25.12», «5 в степени 3»."
 
 def gen_img(prompt):
     try:
@@ -466,7 +506,6 @@ def read_pdf(b64):
         return "".join(page.get_text() for page in doc)[:5000] or "PDF без текста"
     except Exception: return "PDF загружен"
 
-# ================= API =================
 @app.route('/favicon.ico')
 def favicon():
     svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22e0a8"/><stop offset=".5" stop-color="#5b8cff"/><stop offset="1" stop-color="#a855f7"/></linearGradient></defs><rect width="100" height="100" rx="28" fill="url(#g)"/><path d="M50 16 L82 84 H69 L61 63 H39 L31 84 H18 Z M45 52 H55 L50 38 Z" fill="#fff"/></svg>'
@@ -524,22 +563,6 @@ def api_status():
     return jsonify({'ok':True,'premium':bool(s['premium']),'is_admin':bool(s['is_admin']),'is_owner':bool(s['is_owner']),
                     'premium_expires':fmt_date(s['premium_expires']) if s['premium'] else None,'status_text':st,'limit_text':lim,
                     'messages_today':int(u.get('messages_today',0) or 0),'free_limit':FREE_LIMIT,'level':s['level'],'xp':s['xp']})
-@app.route('/api/chat/messages')
-def api_chat_messages():
-    uid=session.get('user_id')
-    if not uid: return jsonify({'ok':False,'error':'Авторизуйся'})
-    cid=request.args.get('id')
-    try: cid=int(cid) if cid else 0
-    except: return jsonify({'ok':False,'error':'Неверный id'})
-    if cid<=0: return jsonify({'ok':False,'error':'Нет id'})
-    try:
-        chats=get_chats(uid)
-        match=[c for c in chats if int(c['id'])==cid]
-        if not match: return jsonify({'ok':False,'error':'Чат не найден'})
-        msgs=get_msgs(cid)
-        return jsonify({'ok':True,'messages':msgs or [],'title':match[0].get('title','Чат')})
-    except Exception as e:
-        return jsonify({'ok':False,'error':'Ошибка: '+str(e)})
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
     uid=session.get('user_id')
@@ -574,8 +597,7 @@ def api_chats():
     if not uid: return jsonify({'ok':False})
     chats=get_chats(uid)
     for c in chats:
-        ms=get_msgs(c['id'])
-        c['last']=ms[-1]['content'][:60] if ms else ''
+        c['messages']=get_msgs(c['id']) or []
     return jsonify({'ok':True,'chats':chats})
 @app.route('/api/chat/new',methods=['POST'])
 def api_chat_new():
@@ -697,7 +719,7 @@ def admin_give():
     except Exception as e: return jsonify({'ok':False,'error':'Ошибка: '+str(e)})
     return jsonify({'ok':True})
 
-# ================= HTML =================
+# ================= HTML (клиентское переключение чатов) =================
 INDEX_HTML = r"""<!DOCTYPE html><html lang="ru"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>✨ Awesome AI — самая умная нейросеть</title>
@@ -801,12 +823,12 @@ textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-
 <div class="welcome" id="welcome">
 <h1>Чем я могу помочь?</h1><p>Твой самый умный и современный ИИ-собеседник</p>
 <div class="sugg-grid">
-<button class="sugg" onclick="send('Объясни простыми словами квантовые вычисления')">🔬 Объясни просто</button>
-<button class="sugg" onclick="send('придумай название для кофейни')">💡 Идеи названий</button>
-<button class="sugg" onclick="send('составь план на день')">📋 План дня</button>
-<button class="sugg" onclick="send('рецепт из курицы')">🍳 Рецепт</button>
-<button class="sugg" onclick="send('тренировка на сегодня')">💪 Тренировка</button>
-<button class="sugg" onclick="send('давай викторину')">🎮 Викторина</button>
+<button class="sugg" onclick="send('сколько будет 15% от 200')">🧮 Проценты</button>
+<button class="sugg" onclick="send('переведи 5 км в мили')">📏 Единицы</button>
+<button class="sugg" onclick="send('сгенерируй пароль 16')">🔐 Пароль</button>
+<button class="sugg" onclick="send('брось кубик')">🎲 Кубик</button>
+<button class="sugg" onclick="send('добавь задачу купить молоко')">📋 Задача</button>
+<button class="sugg" onclick="send('сколько дней до 25.12')">📆 Дни</button>
 </div></div></div>
 <div class="inputarea">
 <div class="attach-preview" id="attachPreview"><img id="attachImg"><span class="an" id="attachName"></span><button class="rm" onclick="removeAttach()">✕</button></div>
@@ -855,11 +877,11 @@ textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-
 <button class="btn ghost" onclick="closeOv('settingsOverlay')">Закрыть</button></div></div>
 
 <script>
-let uid=null,cid=null,sending=false,mode='login',attachedImage=null;
+let uid=null,cid=null,sending=false,mode='login',attachedImage=null,chatsCache=[];
 const $=id=>document.getElementById(id);
 function toast(t,ty){const e=document.createElement('div');e.className='toast '+(ty||'');e.textContent=t;document.body.appendChild(e);requestAnimationFrame(()=>e.classList.add('show'));setTimeout(()=>{e.classList.remove('show');setTimeout(()=>e.remove(),320)},3200)}
 async function api(u,m,b){try{const o={method:m||'GET',headers:{'Content-Type':'application/json'}};if(b)o.body=JSON.stringify(b);const r=await fetch(u,o);const t=await r.text();try{return JSON.parse(t)}catch(e){return{ok:false,error:'Сервер ['+r.status+']'}}}catch(e){return{ok:false,error:'Нет соединения'}}}
-function toggleSidebar(){const s=$('sidebar'),app=$('app');if(innerWidth<=768){s.classList.toggle('open')}else{app.classList.toggle('collapsed')}}
+function toggleSidebar(){const s=$('sidebar'),app=$('app');if(innerWidth<=768)s.classList.toggle('open');else app.classList.toggle('collapsed')}
 function openOv(id){$(id).classList.add('show')}function closeOv(id){$(id).classList.remove('show')}
 function buyPremium(){openOv('premOverlay')}
 function switchTab(m){mode=m;$('tabLogin').className='tab'+(m==='login'?' active':'');$('tabReg').className='tab'+(m==='reg'?' active':'');$('regWrap').style.display=m==='reg'?'block':'none';$('authTitle').textContent=m==='reg'?'Регистрация':'Вход';$('authBtn').textContent=m==='reg'?'Создать':'Войти'}
@@ -867,11 +889,11 @@ async function submitAuth(){const login=$('authLogin').value.trim(),pw=$('authPa
 async function logout(){await api('/api/logout','POST');location.reload()}
 async function init(){const me=await api('/api/me');if(me.ok){uid=me.user_id;$('authOverlay').classList.remove('show');if(me.avatar)$('avBox').innerHTML='<img style="width:100%;height:100%;object-fit:cover" src="'+me.avatar+'">';else $('avBox').textContent=String(me.name||'?').slice(0,1).toUpperCase();$('uName').textContent=me.name||'Пользователь';await loadChats();await checkStatus()}else openOv('authOverlay')}
 async function checkStatus(){const r=await api('/api/status');if(r.ok){$('uStatus').textContent=r.status_text+' · Ур.'+r.level;const b=$('premBtn');if(r.premium){b.textContent='💎 Premium активен';b.classList.add('act')}else{b.textContent='💎 Купить Premium';b.classList.remove('act')}}}
-async function loadChats(){const r=await api('/api/chats');if(!r.ok)return;const l=$('chatList');l.innerHTML='';(r.chats||[]).forEach(c=>{const d=document.createElement('div');d.className='chat-item'+(c.id===cid?' active':'');d.setAttribute('data-cid',c.id);d.innerHTML='💬<span class="t">'+esc(c.title||'Чат')+'</span><button class="del" onclick="delChat('+c.id+',event)">✕</button>';d.onclick=()=>openChat(c.id);l.appendChild(d)})}
-async function openChat(id){if(!id)return;const r=await api('/api/chat/messages?id='+id);if(!r.ok){toast(r.error||'Ошибка загрузки','err');return}cid=id;$('messages').innerHTML='';$('welcome').style.display='none';$('ctTitle').textContent=r.title||'Чат';(r.messages||[]).forEach(m=>addMsg(m.role,m.content,m.image));refreshActive();if(innerWidth<=768)$('sidebar').classList.remove('open')}
-function refreshActive(){document.querySelectorAll('.chat-item').forEach(el=>el.classList.toggle('active',String(el.dataset.cid)===String(cid)))}
+async function loadChats(){const r=await api('/api/chats');if(!r.ok){toast('Не удалось загрузить чаты','err');return}chatsCache=r.chats||[];renderChats()}
+function renderChats(){const l=$('chatList');l.innerHTML='';chatsCache.forEach(c=>{const d=document.createElement('div');d.className='chat-item'+(Number(c.id)===Number(cid)?' active':'');d.setAttribute('data-cid',c.id);d.innerHTML='💬<span class="t">'+esc(c.title||'Чат')+'</span><button class="del" onclick="event.stopPropagation();delChat('+c.id+')">✕</button>';d.onclick=()=>openChat(c.id);l.appendChild(d)})}
+function openChat(id){if(!id)return;const ch=chatsCache.find(x=>Number(x.id)===Number(id));if(!ch){toast('Чат не найден','err');return}cid=Number(id);$('messages').innerHTML='';$('welcome').style.display='none';$('ctTitle').textContent=ch.title||'Чат';(ch.messages||[]).forEach(m=>addMsg(m.role,m.content,m.image));renderChats();if(innerWidth<=768)$('sidebar').classList.remove('open')}
 async function newChat(){const r=await api('/api/chat/new','POST');if(r.ok){cid=r.chat_id;$('messages').innerHTML='';$('welcome').style.display='';$('ctTitle').textContent='Новый чат';loadChats()}}
-async function delChat(id,e){e.stopPropagation();await api('/api/chat/delete','POST',{chat_id:id});if(id===cid){cid=null;boxReset()}loadChats()}
+async function delChat(id){await api('/api/chat/delete','POST',{chat_id:id});if(Number(id)===Number(cid)){cid=null;boxReset()}loadChats()}
 function boxReset(){$('messages').innerHTML='';$('welcome').style.display='';$('ctTitle').textContent='Новый чат'}
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 function fmtAI(t){if(!t)return'';let out='';for(const line of String(t).split('\n')){const h=line.match(/^\*\*(.+?)\*\*$/);if(h){out+='<div class="h">'+esc(h[1])+'</div>';continue}const parts=line.split(/(\*\*.*?\*\*)/g);let p='';for(const part of parts){if(part.startsWith('**')&&part.endsWith('**')&&part.length>4)p+='<b>'+esc(part.slice(2,-2))+'</b>';else p+=esc(part)}out+='<div style="margin:2px 0">'+p+'</div>'}return out}
