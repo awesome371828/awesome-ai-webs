@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AWESOME AI — NEXUS: PostgreSQL (relaxdev), Premium (лимит 50), фото-анализ, мультипровайдер, живой премиум-визуал"""
+"""AWESOME AI — ULTIMATE: PostgreSQL (relaxdev), Premium (лимит 50), фото-анализ, 5 провайдеров (GigaChat/Yandex/ChatGPT/Gemini/DeepSeek), большая память, живой визуал"""
 import os, re, io, time, json, base64, urllib.parse, hashlib, random, html, uuid as _uuid
 from datetime import datetime, timedelta, timezone
 import requests, urllib3
@@ -31,11 +31,13 @@ FOLDER_ID = os.getenv("FOLDER_ID", "b1g4aq87c7j61c6g3i5l")
 GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY", "MDFhMDBkNmEtMmExNC03M2JkLWFlZmMtOTQ0OWVlOTc5M2U1OmE1ZWJhM2NlLTQwYjAtNDZlYi1iMmY2LTE3OTFmYzhhYTQ2MA==")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 OWNER_LOGIN, OWNER_PASSWORD = "admin", "qawsedrf2346"
 FREE_LIMIT = 50
-MAX_HISTORY = 24
+MAX_HISTORY = 40        # большая память контекста
+MEM_LIMIT = 40          # сколько фактов помнить
 GIGA_TIMEOUT, YGPT_TIMEOUT, SEARCH_TIMEOUT = 35, 30, 5
 
 MOSCOW_TZ = timezone(timedelta(hours=3))
@@ -152,7 +154,7 @@ def add_xp(uid, amt):
     upd(uid, xp=xp, level=1+xp//100)
 
 # ================= ПАМЯТЬ =================
-def get_memory(uid, limit=30):
+def get_memory(uid, limit=MEM_LIMIT):
     try:
         conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("SELECT fact FROM user_memory WHERE user_id=%s ORDER BY id DESC LIMIT %s",(str(uid),limit))
@@ -188,7 +190,7 @@ def create_chat(uid, title="Новый чат"):
     cid=cur.fetchone()[0]; conn.commit(); cur.close(); conn.close(); return cid
 def get_chats(uid):
     conn=get_db(); cur=conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM chats_web WHERE user_id=%s ORDER BY created_at DESC",(str(uid),))
+    cur.execute("SELECT * FROM chats_web WHERE user_id=%s ORDER BY pinned DESC, created_at DESC",(str(uid),))
     rows=cur.fetchall(); cur.close(); conn.close(); return [dict(r) for r in rows]
 def add_msg(cid, role, content, image=None):
     conn=get_db(); cur=conn.cursor()
@@ -201,7 +203,7 @@ def get_msgs(cid):
 def hist(cid):
     m=get_msgs(cid)
     if len(m)<=MAX_HISTORY: return m or []
-    return (m[:6]+m[-MAX_HISTORY+6:]) if len(m)>6 else m
+    return (m[:8]+m[-MAX_HISTORY+8:]) if len(m)>8 else m
 def set_title(cid,t):
     conn=get_db(); cur=conn.cursor(); cur.execute("UPDATE chats_web SET title=%s WHERE id=%s",(t[:50],int(cid))); conn.commit(); cur.close(); conn.close()
 def del_chat(uid,cid):
@@ -210,7 +212,7 @@ def del_chat(uid,cid):
     cur.execute("DELETE FROM chats_web WHERE id=%s AND user_id=%s",(int(cid),str(uid)))
     conn.commit(); cur.close(); conn.close()
 
-# ================= НЕЙРОСЕТЬ =================
+# ================= НЕЙРОСЕТЬ (5 провайдеров) =================
 tok=None; tok_t=0
 def get_tok():
     global tok, tok_t
@@ -231,7 +233,7 @@ def giga(hlist, sysp, max_tok=2000):
     try:
         t=get_tok()
         if not t: return None
-        msgs=[{"role":"system","content":sysp[:3000]}]+[{"role":h.get("role","user"),"content":(h.get("content") or "")[:800]} for h in hlist[-12:] if h.get("role") in ("user","assistant")]
+        msgs=[{"role":"system","content":sysp[:3000]}]+[{"role":h.get("role","user"),"content":(h.get("content") or "")[:1000]} for h in hlist[-14:] if h.get("role") in ("user","assistant")]
         r=requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
             headers={"Authorization":"Bearer "+t,"Content-Type":"application/json","Accept":"application/json"},
             json={"model":"GigaChat-Pro","messages":msgs,"temperature":0.85,"max_tokens":max_tok},timeout=GIGA_TIMEOUT,verify=False)
@@ -254,7 +256,7 @@ def ygpt(text, sysp):
 def openai_call(hlist, sysp, max_tok=1200):
     if not OPENAI_API_KEY: return None
     try:
-        msgs=[{"role":"system","content":sysp[:3000]}]+[{"role":h.get("role","user"),"content":(h.get("content") or "")[:800]} for h in hlist[-12:] if h.get("role") in ("user","assistant")]
+        msgs=[{"role":"system","content":sysp[:3000]}]+[{"role":h.get("role","user"),"content":(h.get("content") or "")[:1000]} for h in hlist[-14:] if h.get("role") in ("user","assistant")]
         r=requests.post("https://api.openai.com/v1/chat/completions",
             headers={"Authorization":"Bearer "+OPENAI_API_KEY,"Content-Type":"application/json"},
             json={"model":"gpt-4o-mini","messages":msgs,"temperature":0.85,"max_tokens":max_tok},timeout=GIGA_TIMEOUT)
@@ -263,10 +265,10 @@ def openai_call(hlist, sysp, max_tok=1200):
             except Exception: return None
     except Exception: pass
     return None
-def deepseek_call(hlist, sysp, max_tok=1200):
+def deepseek_call(hlist, sysp, max_tok=1600):
     if not DEEPSEEK_API_KEY: return None
     try:
-        msgs=[{"role":"system","content":sysp[:3000]}]+[{"role":h.get("role","user"),"content":(h.get("content") or "")[:800]} for h in hlist[-12:] if h.get("role") in ("user","assistant")]
+        msgs=[{"role":"system","content":sysp[:3000]}]+[{"role":h.get("role","user"),"content":(h.get("content") or "")[:1000]} for h in hlist[-14:] if h.get("role") in ("user","assistant")]
         r=requests.post("https://api.deepseek.com/chat/completions",
             headers={"Authorization":"Bearer "+DEEPSEEK_API_KEY,"Content-Type":"application/json"},
             json={"model":"deepseek-chat","messages":msgs,"temperature":0.85,"max_tokens":max_tok},timeout=GIGA_TIMEOUT)
@@ -275,18 +277,32 @@ def deepseek_call(hlist, sysp, max_tok=1200):
             except Exception: return None
     except Exception: pass
     return None
+def gemini_call(text, sysp):
+    if not GEMINI_API_KEY: return None
+    try:
+        body={"contents":[{"role":"user","parts":[{"text":sysp[:3000]+"\n\nЗадача пользователя:\n"+text}]}],
+              "generationConfig":{"temperature":0.8,"maxOutputTokens":1400}}
+        r=requests.post("https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key="+GEMINI_API_KEY,
+            headers={"Content-Type":"application/json"},json=body,timeout=GIGA_TIMEOUT)
+        if r.status_code==200:
+            try:
+                parts=r.json()["candidates"][0]["content"]["parts"]
+                return "".join(p.get("text","") for p in parts) or None
+            except Exception: return None
+    except Exception: pass
+    return None
 def describe_img(b64):
-    """Анализ фото через GigaChat (vision). Пытается несколько раз."""
-    for attempt in range(2):
+    """Анализ фото через GigaChat (vision). Несколько попыток."""
+    for attempt in range(3):
         try:
             t=get_tok()
             if not t: return None
             payload={"model":"GigaChat-Pro","messages":[
-                {"role":"system","content":"Ты — эксперт по анализу изображений. Подробно, интересно и живо опиши на русском, что видишь на фото: объекты, людей, эмоции, окружение, детали."},
+                {"role":"system","content":"Ты — эксперт по анализу изображений. Подробно, живо и интересно опиши на русском: объекты, людей, эмоции, окружение, детали, цвета, текст на картинке."},
                 {"role":"user","content":[
                     {"type":"text","text":"Подробно опиши, что изображено на этой фотографии."},
                     {"type":"image_url","image_url":{"url":"data:image/jpeg;base64,"+b64}}
-                ]}],"temperature":0.6,"max_tokens":700}
+                ]}],"temperature":0.6,"max_tokens":800}
             r=requests.post("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
                 headers={"Authorization":"Bearer "+t,"Content-Type":"application/json","Accept":"application/json"},
                 json=payload,timeout=GIGA_TIMEOUT,verify=False)
@@ -299,12 +315,13 @@ def describe_img(b64):
         time.sleep(1.0)
     return None
 
-SUPER="""ТЫ — AWESOME AI NEXUS, самая современная живая нейросеть уровня ChatGPT.
+SUPER="""ТЫ — AWESOME AI ULTIMATE, самая современная и мощная нейросеть уровня ChatGPT.
 РОССИЯ, МОСКВА. Сегодня: {d}, время: {t} (МСК).
 {memory}
-СТИЛЬ: живой, тёплый, умный собеседник с лёгким юмором. Конкретика, цифры, примеры.
+СТИЛЬ: живой, тёплый, глубокий интеллект с лёгким юмором. Конкретика, цифры, примеры, структура.
 ФОРМАТ: разделы **1. Название**, важное **жирным**, эмодзи где уместно.
-Если тебе дали описание изображения — отталкивайся от него и отвечай по существу."""
+Если дано описание изображения — отвечай по нему подробно.
+Умеешь: объяснять сложное просто, писать код, планировать, анализировать, творить, помогать по учёбе и жизни."""
 
 def smart_answer(uid, text, history, img_desc=None, doc=None, has_img=False):
     mem=get_memory(uid)
@@ -315,20 +332,30 @@ def smart_answer(uid, text, history, img_desc=None, doc=None, has_img=False):
     tl=(text or "").lower().strip()
     try: extract_facts(uid, text)
     except Exception: pass
-    # если прислали только фото и анализа нет — честно говорим, что видим
     if has_img and not text.strip() and not img_desc:
-        return "📷 Вижу, ты прислал изображение, но не смог его сейчас обработать (внешний сервис недоступен). Опиши словами, что на нём, или напиши вопрос — сразу помогу!"
+        return "📷 Вижу, ты прислал изображение, но сервис анализа сейчас недоступен (внешний трафик, похоже, заблокирован). Опиши словами, что на нём — и я сразу помогу!"
     hfull=history+[{"role":"user","content":text or "Опиши изображение" if has_img else (text or "Опиши")}]
+    provider=None
+    # Цепочка: GigaChat → YandexGPT → Gemini → ChatGPT → DeepSeek → локальные фолбэки
     a=giga(hfull, sp)
-    if a and len(a)>4: return a
-    b=ygpt(text, sp)
-    if b and len(b)>4: return b
-    c=openai_call(hfull, sp)
-    if c and len(c)>4: return c
-    d=deepseek_call(hfull, sp)
-    if d and len(d)>4: return d
+    if a and len(a)>4: provider="GigaChat"; res=a
+    else:
+        b=ygpt(text, sp)
+        if b and len(b)>4: provider="YandexGPT"; res=b
+        else:
+            e=gemini_call(text, sp)
+            if e and len(e)>4: provider="Gemini"; res=e
+            else:
+                c=openai_call(hfull, sp)
+                if c and len(c)>4: provider="ChatGPT"; res=c
+                else:
+                    d=deepseek_call(hfull, sp)
+                    if d and len(d)>4: provider="DeepSeek"; res=d
+                    else: res=None
+    if res:
+        return res
     if img_desc: return "Я вижу это так:\n\n"+img_desc
-    if any(w in tl for w in ["привет","здравств","хай","ку"]): return "Привет! Рад тебя видеть. Чем помогу?"
+    if any(w in tl for w in ["привет","здравств","хай","ку"]): return "Привет! Рад тебя видеть. Чем могу помочь сегодня?"
     if "время" in tl and ("сейчас" in tl or "сколько" in tl or "час" in tl):
         return "Сейчас "+gm().strftime('%H:%M:%S')+" (Москва), дата: "+gdate()+"."
     if "дата" in tl or "какое сегодня число" in tl:
@@ -359,7 +386,7 @@ def smart_answer(uid, text, history, img_desc=None, doc=None, has_img=False):
         return "Я AWESOME AI ✨\n1. Общаюсь\n2. Анализирую фото\n3. Помню о тебе\n4. Ищу в интернете\n5. Считаю\n6. Рисую\n7. Погода/валюты/крипта\n8. Перевожу\n9. Шучу\n\nЧто попробуем?"
     if re.search(r'\d+\s*[\+\-\*\/]\s*\d+', tl):
         try:
-            expr=re.sub(r'[^0-9+\-*/(). ]','',tl); res=eval(expr); return "Результат: "+str(res)
+            expr=re.sub(r'[^0-9+\-*/(). ]','',tl); resx=eval(expr); return "Результат: "+str(resx)
         except Exception: return "Не понял выражение. Например: 2+2*3"
     if "режим" in tl or "стань" in tl:
         return "Режимы: «Будь моим юристом», «Психологом», «Учителем», «Кодером», «Маркетологом»."
@@ -408,7 +435,7 @@ def read_pdf(b64):
 # ================= API =================
 @app.route('/favicon.ico')
 def favicon():
-    svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#10a37f"/><stop offset="1" stop-color="#3b82f6"/></linearGradient></defs><rect width="100" height="100" rx="26" fill="url(#g)"/><path d="M50 20 L80 80 H68 L61 64 H39 L32 80 H20 Z M45 54 H55 L50 42 Z" fill="#fff"/></svg>'
+    svg='<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22e0a8"/><stop offset=".5" stop-color="#5b8cff"/><stop offset="1" stop-color="#a855f7"/></linearGradient></defs><rect width="100" height="100" rx="28" fill="url(#g)"/><path d="M50 16 L82 84 H69 L61 63 H39 L31 84 H18 Z M45 52 H55 L50 38 Z" fill="#fff"/></svg>'
     return app.response_class(svg, mimetype='image/svg+xml')
 
 @app.route('/')
@@ -417,7 +444,10 @@ def index(): return render_template_string(INDEX_HTML)
 @app.route('/api/diag')
 def diag():
     try:
-        c=get_db(); c.close(); return jsonify({'ok':True,'db':'postgres-ok'})
+        c=get_db(); c.close()
+        prov={'gigachat':bool(GIGACHAT_AUTH_KEY),'yandex':bool(YANDEX_API_KEY and FOLDER_ID),
+              'openai':bool(OPENAI_API_KEY),'deepseek':bool(DEEPSEEK_API_KEY),'gemini':bool(GEMINI_API_KEY)}
+        return jsonify({'ok':True,'db':'postgres-ok','providers':prov})
     except Exception as e: return jsonify({'ok':False,'error':str(e)})
 
 @app.route('/api/register', methods=['POST'])
@@ -460,6 +490,17 @@ def api_status():
     return jsonify({'ok':True,'premium':bool(s['premium']),'is_admin':bool(s['is_admin']),'is_owner':bool(s['is_owner']),
                     'premium_expires':fmt_date(s['premium_expires']) if s['premium'] else None,'status_text':st,'limit_text':lim,
                     'messages_today':int(u.get('messages_today',0) or 0),'free_limit':FREE_LIMIT,'level':s['level'],'xp':s['xp']})
+@app.route('/api/chat/messages')
+def api_chat_messages():
+    uid=session.get('user_id')
+    if not uid: return jsonify({'ok':False,'error':'Авторизуйся'})
+    cid=request.args.get('id')
+    if not cid: return jsonify({'ok':False,'error':'Нет id'})
+    try: cid=int(cid)
+    except: return jsonify({'ok':False,'error':'Неверный id'})
+    chats=get_chats(uid)
+    if not any(c['id']==cid for c in chats): return jsonify({'ok':False,'error':'Чат не найден'})
+    return jsonify({'ok':True,'messages':get_msgs(cid),'title':next((c['title'] for c in chats if c['id']==cid),'Чат')})
 @app.route('/api/chat', methods=['POST'])
 def api_chat():
     uid=session.get('user_id')
@@ -493,7 +534,8 @@ def api_chats():
     uid=session.get('user_id')
     if not uid: return jsonify({'ok':False})
     chats=get_chats(uid)
-    for c in chats: c['messages']=get_msgs(c['id'])
+    for c in chats:
+        c['last']=get_msgs(c['id'])[-1]['content'][:60] if get_msgs(c['id']) else ''
     return jsonify({'ok':True,'chats':chats})
 @app.route('/api/chat/new',methods=['POST'])
 def api_chat_new():
@@ -511,7 +553,7 @@ def api_search():
     if not uid: return jsonify({'ok':False})
     q=request.json.get('q','').lower(); res=[]
     for c in get_chats(uid):
-        for m in c['messages']:
+        for m in get_msgs(c['id']):
             if q in str(m.get('content','')).lower():
                 res.append({'chat_id':c['id'],'title':c['title'],'snippet':str(m.get('content',''))[:80]}); break
     return jsonify({'ok':True,'results':res})
@@ -615,49 +657,48 @@ def admin_give():
     except Exception as e: return jsonify({'ok':False,'error':'Ошибка: '+str(e)})
     return jsonify({'ok':True})
 
-# ================= HTML (премиум-визуал: стекло, свечение, живые слои) =================
+# ================= HTML (фиксы чатов, 5 провайдеров, живой премиум-визуал) =================
 INDEX_HTML = r"""<!DOCTYPE html><html lang="ru"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>Awesome AI</title><link rel="icon" href="/favicon.ico">
+<title>✨ Awesome AI — самая умная нейросеть</title>
+<link rel="icon" href="/favicon.ico">
+<meta name="theme-color" content="#07090d">
 <style>
-:root{--bg:#07090d;--panel:rgba(18,23,32,.62);--panel2:rgba(24,30,42,.72);--line:rgba(255,255,255,.09);--text:#f0f4f8;--muted:#98a6b6;--accent:#22e0a8;--accent2:#5b8cff;--accent3:#a855f7;--gold:#ffd76a;--danger:#ff5c7a}
+:root{--bg:#07090d;--panel:rgba(18,23,32,.62);--panel2:rgba(24,30,42,.74);--line:rgba(255,255,255,.09);--text:#f0f4f8;--muted:#98a6b6;--accent:#22e0a8;--accent2:#5b8cff;--accent3:#a855f7;--gold:#ffd76a;--danger:#ff5c7a}
 *{margin:0;padding:0;box-sizing:border-box;font-family:'Söhne','Segoe UI',system-ui,sans-serif}
 html,body{height:100%}
 body{background:var(--bg);color:var(--text);overflow:hidden;-webkit-font-smoothing:antialiased}
-/* === Живая фоновая сцена === */
 .scene{position:fixed;inset:0;z-index:0;overflow:hidden;background:
 radial-gradient(120% 120% at 15% 10%,#0d2b24 0%,transparent 50%),
 radial-gradient(120% 120% at 85% 20%,#141a3d 0%,transparent 50%),
-radial-gradient(120% 120% at 50% 100%,#1b1030 0%,transparent 55%),
-#07090d}
+radial-gradient(120% 120% at 50% 100%,#1b1030 0%,transparent 55%),#07090d}
 .glow{position:absolute;border-radius:50%;filter:blur(70px);mix-blend-mode:screen;will-change:transform;animation:drift var(--d,20s) ease-in-out infinite alternate}
 .g1{--d:16s;width:520px;height:520px;background:radial-gradient(circle,#16d6a4,transparent 65%);top:-140px;left:-100px;opacity:.5}
 .g2{--d:22s;width:460px;height:460px;background:radial-gradient(circle,#4f7dff,transparent 65%);bottom:-120px;right:-80px;opacity:.45}
 .g3{--d:28s;width:400px;height:400px;background:radial-gradient(circle,#b26bff,transparent 65%);top:45%;left:52%;opacity:.4}
-.g4{--d:34s;width:360px;height:360px;background:radial-gradient(circle,#ffd76a,transparent 68%);top:8%;right:22%;opacity:.25}
+.g4{--d:34s;width:360px;height:360px;background:radial-gradient(circle,#ffd76a,transparent 68%);top:8%;right:22%;opacity:.22}
 @keyframes drift{0%{transform:translate(0,0) scale(1)}100%{transform:translate(var(--tx,60px),var(--ty,40px)) scale(1.18)}}
 .star{position:absolute;border-radius:50%;background:#fff;opacity:.7;animation:tw 3s ease-in-out infinite}
-@keyframes tw{0%,100%{opacity:.15}50%{opacity:.85}}
-.gridline{position:absolute;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.08),transparent);opacity:.5}
+@keyframes tw{0%,100%{opacity:.12}50%{opacity:.85}}
 .app{position:relative;z-index:1;display:flex;height:100vh}
-/* === Сайдбар-стекло === */
-.sidebar{width:280px;background:var(--panel);backdrop-filter:blur(22px) saturate(1.4);-webkit-backdrop-filter:blur(22px) saturate(1.4);border-right:1px solid var(--line);display:flex;flex-direction:column;transition:transform .3s cubic-bezier(.4,0,.2,1);z-index:60}
-.sidebar.closed{transform:translateX(-100%);width:0;min-width:0;border-right:none}
+/* Сайдбар: корректное скрытие без артефактов */
+.sidebar{width:280px;background:var(--panel);backdrop-filter:blur(22px) saturate(1.4);-webkit-backdrop-filter:blur(22px) saturate(1.4);border-right:1px solid var(--line);display:flex;flex-direction:column;transition:margin-left .3s cubic-bezier(.4,0,.2,1);z-index:60}
+.app.collapsed .sidebar{margin-left:-280px}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
 .brand{display:flex;align-items:center;gap:11px;padding:16px 14px 12px}
 .brand .logo{width:38px;height:38px;border-radius:11px;background:conic-gradient(from 180deg,#22e0a8,#5b8cff,#a855f7,#22e0a8);display:flex;align-items:center;justify-content:center;box-shadow:0 6px 22px rgba(34,224,168,.45);animation:spin 8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.brand .nm{font-weight:700;font-size:17px;background:linear-gradient(90deg,#22e0a8,#5b8cff);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
-.new-chat{margin:4px 12px 10px;padding:12px 14px;background:linear-gradient(135deg,rgba(34,224,168,.16),rgba(91,140,255,.14));border:1px solid var(--line);border-radius:13px;color:#fff;cursor:pointer;font-size:14px;display:flex;align-items:center;gap:9px;font-weight:600;transition:.2s}.new-chat:hover{border-color:rgba(34,224,168,.6);transform:translateY(-1px);box-shadow:0 8px 24px rgba(34,224,168,.15)}
+.brand .nm{font-weight:800;font-size:17px;background:linear-gradient(90deg,#22e0a8,#5b8cff);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.new-chat{margin:4px 12px 10px;padding:12px 14px;background:linear-gradient(135deg,rgba(34,224,168,.16),rgba(91,140,255,.14));border:1px solid var(--line);border-radius:13px;color:#fff;cursor:pointer;font-size:14px;display:flex;align-items:center;gap:9px;font-weight:600;transition:.2s}.new-chat:hover{border-color:rgba(34,224,168,.6);transform:translateY(-1px)}
 .chat-list{flex:1;overflow-y:auto;padding:4px 8px}
 .chat-item{padding:11px 13px;border-radius:11px;cursor:pointer;margin-bottom:3px;font-size:13.5px;display:flex;align-items:center;gap:9px;transition:.15s;border:1px solid transparent}.chat-item:hover,.chat-item.active{background:rgba(255,255,255,.05);border-color:var(--line)}
-.chat-item .t{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chat-item .del{opacity:0;background:none;border:none;color:var(--muted);cursor:pointer}.chat-item:hover .del{opacity:1}
+.chat-item .t{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chat-item .del{opacity:0;background:none;border:none;color:var(--muted);cursor:pointer;font-size:14px;padding:2px 4px}.chat-item:hover .del{opacity:1}
 .side-foot{padding:8px;border-top:1px solid var(--line)}
-.side-btn{display:flex;align-items:center;gap:10px;width:100%;padding:9px 11px;border:none;background:none;color:var(--text);cursor:pointer;font-size:13.5px;border-radius:11px;text-align:left;transition:.15s}.side-btn:hover{background:rgba(255,255,255,.05)}
-.side-btn .ic{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:15px;flex-shrink:0;box-shadow:0 4px 14px rgba(34,224,168,.25)}
-.prem-btn{margin:8px 10px;padding:12px;border-radius:13px;border:none;cursor:pointer;font-weight:800;font-size:14px;color:#241503;background:linear-gradient(120deg,#ffe08a,#ffb347,#ff7a59);background-size:220% 220%;animation:grad 4s ease infinite;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 8px 26px rgba(255,170,70,.4);transition:.2s}.prem-btn:hover{transform:translateY(-2px) scale(1.02);box-shadow:0 12px 34px rgba(255,170,70,.55)}
-.prem-btn.act{background:linear-gradient(120deg,#22e0a8,#34d399);color:#04241a;box-shadow:0 8px 26px rgba(34,224,168,.35)}
+.side-btn{display:flex;align-items:center;gap:10px;width:100%;padding:9px 11px;border:none;background:none;color:var(--text);cursor:pointer;font-size:13.5px;border-radius:11px;text-align:left}.side-btn:hover{background:rgba(255,255,255,.05)}
+.side-btn .ic{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:15px;flex-shrink:0}
+.prem-btn{margin:8px 10px;padding:12px;border-radius:13px;border:none;cursor:pointer;font-weight:800;font-size:14px;color:#241503;background:linear-gradient(120deg,#ffe08a,#ffb347,#ff7a59);background-size:220% 220%;animation:grad 4s ease infinite;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 8px 26px rgba(255,170,70,.4);transition:.2s}.prem-btn:hover{transform:translateY(-2px) scale(1.02)}
+.prem-btn.act{background:linear-gradient(120deg,#22e0a8,#34d399);color:#04241a}
 @keyframes grad{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
-.main{flex:1;display:flex;flex-direction:column;min-width:0}
 .topbar{height:54px;display:flex;align-items:center;gap:10px;padding:0 18px;border-bottom:1px solid var(--line);flex-shrink:0;background:rgba(7,9,13,.45);backdrop-filter:blur(14px)}
 .burger{background:none;border:none;color:var(--text);font-size:20px;cursor:pointer;padding:6px;border-radius:9px}.burger:hover{background:rgba(255,255,255,.07)}
 .topbar .ct{flex:1;text-align:center;font-size:14px;color:var(--muted);font-weight:500}
@@ -669,22 +710,23 @@ radial-gradient(120% 120% at 50% 100%,#1b1030 0%,transparent 55%),
 @keyframes gr{to{background-position:300% center}}
 .welcome p{color:var(--muted);font-size:17px;margin-bottom:30px}
 .sugg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;max-width:720px;margin:0 auto}
-.sugg{border:1px solid var(--line);border-radius:16px;padding:16px;cursor:pointer;font-size:13px;color:var(--muted);text-align:left;background:var(--panel);backdrop-filter:blur(10px);transition:.2s}.sugg:hover{background:var(--panel2);transform:translateY(-3px);border-color:rgba(34,224,168,.5);box-shadow:0 10px 30px rgba(34,224,168,.12)}
+.sugg{border:1px solid var(--line);border-radius:16px;padding:16px;cursor:pointer;font-size:13px;color:var(--muted);text-align:left;background:var(--panel);backdrop-filter:blur(10px);transition:.2s}.sugg:hover{background:var(--panel2);transform:translateY(-3px);border-color:rgba(34,224,168,.5)}
 .msgrow{display:flex;gap:15px;padding:22px 26px;border-bottom:1px solid var(--line);animation:fadeUp .25s ease}
 .msgrow.user{background:rgba(255,255,255,.015)}.msgrow.ai{background:rgba(18,23,32,.4)}
 .msgrow .mb{max-width:820px;width:100%;margin:0 auto;font-size:15.5px;line-height:1.75;white-space:pre-wrap;word-break:break-word}
 .msgrow .mb b{font-weight:700}.msgrow .mb .h{display:block;font-weight:800;font-size:17px;margin:18px 0 6px}.msgrow .mb .h:first-child{margin-top:0}
 .msgrow .ma{width:34px;height:34px;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-weight:700;box-shadow:0 6px 18px rgba(0,0,0,.35)}
 .msgrow.user .ma{background:conic-gradient(from 180deg,#22e0a8,#5b8cff);color:#04121c}.msgrow .mb img{max-width:100%;max-height:420px;border-radius:14px;margin-top:10px;box-shadow:0 10px 34px rgba(0,0,0,.5);border:1px solid var(--line)}
+.prov-tag{display:inline-block;margin-left:8px;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700;background:rgba(34,224,168,.15);color:var(--accent);vertical-align:middle}
 .typing span{display:inline-block;width:7px;height:7px;border-radius:50%;background:#22e0a8;margin-right:5px;animation:blink 1.2s infinite}.typing span:nth-child(2){animation-delay:.2s}.typing span:nth-child(3){animation-delay:.4s}
 @keyframes blink{0%,80%,100%{opacity:.2;transform:scale(1)}40%{opacity:1;transform:scale(1.3)}}
 .inputarea{padding:14px 24px;flex-shrink:0}
 .attach-preview{max-width:820px;margin:0 auto 8px;display:none;gap:9px;align-items:center;background:var(--panel2);border:1px solid var(--line);border-radius:15px;padding:8px}
 .attach-preview img{width:52px;height:52px;object-fit:cover;border-radius:9px}.attach-preview .an{flex:1;font-size:13px;color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.attach-preview .rm{background:none;border:none;color:var(--muted);cursor:pointer;font-size:18px}
-.inputwrap{max-width:820px;margin:0 auto;display:flex;align-items:flex-end;gap:6px;background:var(--panel2);backdrop-filter:blur(16px);border:1px solid var(--line);border-radius:28px;padding:10px 12px;transition:.2s}.inputwrap:focus-within{border-color:rgba(34,224,168,.6);box-shadow:0 0 0 4px rgba(34,224,168,.12),0 10px 40px rgba(0,0,0,.3)}
+.inputwrap{max-width:820px;margin:0 auto;display:flex;align-items:flex-end;gap:6px;background:var(--panel2);backdrop-filter:blur(16px);border:1px solid var(--line);border-radius:28px;padding:10px 12px;transition:.2s}.inputwrap:focus-within{border-color:rgba(34,224,168,.6);box-shadow:0 0 0 4px rgba(34,224,168,.12)}
 textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:15px;resize:none;max-height:150px;line-height:1.5}
-.tbtn{background:none;border:none;color:var(--muted);width:36px;height:36px;border-radius:10px;cursor:pointer;font-size:17px;transition:.15s}.tbtn:hover{background:rgba(255,255,255,.08);transform:translateY(-1px)}
-.sendbtn{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#22e0a8,#0d9d7a);border:none;color:#03140d;cursor:pointer;font-size:16px;flex-shrink:0;opacity:.45;transition:.2s}.sendbtn.on{opacity:1}.sendbtn:hover{transform:scale(1.1);box-shadow:0 6px 20px rgba(34,224,168,.4)}
+.tbtn{background:none;border:none;color:var(--muted);width:36px;height:36px;border-radius:10px;cursor:pointer;font-size:17px}.tbtn:hover{background:rgba(255,255,255,.08)}
+.sendbtn{width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#22e0a8,#0d9d7a);border:none;color:#03140d;cursor:pointer;font-size:16px;flex-shrink:0;opacity:.45;transition:.2s}.sendbtn.on{opacity:1}.sendbtn:hover{transform:scale(1.1)}
 .foot{max-width:820px;margin:7px auto 0;text-align:center;font-size:11.5px;color:var(--muted)}.foot a{color:var(--accent);text-decoration:none}
 .overlay{position:fixed;inset:0;background:rgba(4,6,10,.78);backdrop-filter:blur(8px);z-index:100;display:flex;align-items:center;justify-content:center;padding:16px;opacity:0;visibility:hidden;transition:opacity .25s,visibility .25s}
 .overlay.show{opacity:1;visibility:visible}
@@ -692,23 +734,23 @@ textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-
 .modal.wide{max-width:600px}
 .modal h2{margin-bottom:7px;font-size:22px;font-weight:800}.modal p{color:var(--muted);font-size:14px;margin-bottom:18px}
 .tabs{display:flex;background:rgba(255,255,255,.05);border-radius:12px;padding:4px;margin-bottom:18px}
-.tab{flex:1;padding:10px;border-radius:9px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;font-size:14px;transition:.15s}.tab.active{background:linear-gradient(135deg,rgba(34,224,168,.2),rgba(91,140,255,.2));color:#fff;border:1px solid var(--line)}
-.inp{width:100%;padding:13px;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:11px;color:var(--text);font-size:15px;margin-bottom:11px;outline:none;transition:.15s}.inp:focus{border-color:rgba(34,224,168,.6);box-shadow:0 0 0 3px rgba(34,224,168,.12)}
-.btn{width:100%;padding:13px;border:none;border-radius:11px;background:linear-gradient(135deg,#22e0a8,#0d9d7a);color:#03140d;font-weight:800;font-size:15px;cursor:pointer;margin-bottom:9px;transition:.2s}.btn:hover{transform:translateY(-1px);box-shadow:0 8px 26px rgba(34,224,168,.35)}
+.tab{flex:1;padding:10px;border-radius:9px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-weight:600;font-size:14px}.tab.active{background:linear-gradient(135deg,rgba(34,224,168,.2),rgba(91,140,255,.2));color:#fff;border:1px solid var(--line)}
+.inp{width:100%;padding:13px;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:11px;color:var(--text);font-size:15px;margin-bottom:11px;outline:none}.inp:focus{border-color:rgba(34,224,168,.6)}
+.btn{width:100%;padding:13px;border:none;border-radius:11px;background:linear-gradient(135deg,#22e0a8,#0d9d7a);color:#03140d;font-weight:800;font-size:15px;cursor:pointer;margin-bottom:9px;transition:.2s}.btn:hover{transform:translateY(-1px)}
 .btn.ghost{background:rgba(255,255,255,.06);color:var(--text);border:1px solid var(--line)}
 .btn.gold{background:linear-gradient(120deg,#ffe08a,#ffb347,#ff7a59);color:#241503;font-weight:800}
 .logo-xl{width:60px;height:60px;border-radius:16px;background:conic-gradient(from 180deg,#22e0a8,#5b8cff,#a855f7);color:#fff;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;box-shadow:0 10px 34px rgba(34,224,168,.4)}
 .row{display:flex;gap:9px;align-items:center;margin-bottom:11px}.row label{flex:1;text-align:left;font-size:14px;color:var(--muted)}
 .cookie{position:fixed;bottom:0;left:0;right:0;background:rgba(12,16,22,.92);backdrop-filter:blur(14px);border-top:1px solid var(--line);padding:15px 22px;z-index:200;display:flex;align-items:center;gap:14px;justify-content:space-between;transform:translateY(120%);transition:transform .4s}
 .cookie.show{transform:translateY(0)}.cookie p{font-size:13px;color:var(--muted)}.cookie .cb{background:linear-gradient(135deg,#22e0a8,#0d9d7a);color:#03140d;border:none;border-radius:11px;padding:10px 20px;cursor:pointer;font-weight:800;white-space:nowrap}
-.toast{position:fixed;top:18px;right:18px;background:rgba(16,21,30,.95);border:1px solid var(--line);border-radius:13px;padding:13px 18px;z-index:400;font-size:14px;transform:translateX(130%);transition:transform .35s;backdrop-filter:blur(12px);box-shadow:0 12px 40px rgba(0,0,0,.5)}.toast.show{transform:translateX(0)}.toast.err{border-color:var(--danger)}.toast.ok{border-color:var(--accent)}
-::-webkit-scrollbar{width:9px}::-webkit-scrollbar-thumb{background:#26303d;border-radius:5px}::-webkit-scrollbar-track{background:transparent}
-@media(max-width:768px){.sidebar{position:fixed;left:0;top:0;bottom:0;transform:translateX(-100%)}.sidebar.open{transform:translateX(0)}.msgrow{padding:16px}.cookie{flex-direction:column;align-items:flex-start}}
+.toast{position:fixed;top:18px;right:18px;background:rgba(16,21,30,.95);border:1px solid var(--line);border-radius:13px;padding:13px 18px;z-index:400;font-size:14px;transform:translateX(130%);transition:transform .35s;backdrop-filter:blur(12px)}.toast.show{transform:translateX(0)}.toast.err{border-color:var(--danger)}.toast.ok{border-color:var(--accent)}
+::-webkit-scrollbar{width:9px}::-webkit-scrollbar-thumb{background:#26303d;border-radius:5px}
+@media(max-width:768px){.sidebar{position:fixed;left:0;top:0;bottom:0;margin-left:0!important;transform:translateX(-100%);transition:transform .3s}.sidebar.open{transform:translateX(0)}.msgrow{padding:16px}.cookie{flex-direction:column;align-items:flex-start}}
 </style></head><body>
 <div class="scene" id="scene"><div class="glow g1" style="--tx:70px;--ty:50px"></div><div class="glow g2" style="--tx:-80px;--ty:-40px"></div><div class="glow g3" style="--tx:40px;--ty:-70px"></div><div class="glow g4" style="--tx:-50px;--ty:60px"></div></div>
-<div class="app">
+<div class="app" id="app">
 <aside class="sidebar" id="sidebar">
-<div class="brand"><div class="logo"><svg width="22" height="22" viewBox="0 0 100 100"><path d="M50 18 L82 82 H69 L61 63 H39 L31 82 H18 Z M45 53 H55 L50 40 Z" fill="#fff"/></svg></div><span class="nm">Awesome AI</span></div>
+<div class="brand"><div class="logo"><svg width="22" height="22" viewBox="0 0 100 100"><path d="M50 18 L82 84 H69 L61 63 H39 L31 84 H18 Z M45 53 H55 L50 40 Z" fill="#fff"/></svg></div><span class="nm">Awesome AI</span></div>
 <button class="new-chat" onclick="newChat()">✏️ Новый чат</button>
 <div class="chat-list" id="chatList"></div>
 <div class="side-foot">
@@ -720,7 +762,7 @@ textarea{flex:1;background:none;border:none;outline:none;color:var(--text);font-
 <div class="topbar"><button class="burger" onclick="toggleSidebar()">☰</button><div class="ct" id="ctTitle">Новый чат · <span class="pill" id="uStatus"></span></div></div>
 <div class="messages" id="messages">
 <div class="welcome" id="welcome">
-<h1>Чем я могу помочь?</h1><p>Твой самый современный ИИ-собеседник нового поколения</p>
+<h1>Чем я могу помочь?</h1><p>Твой самый умный и современный ИИ-собеседник</p>
 <div class="sugg-grid">
 <button class="sugg" onclick="send('Объясни простыми словами квантовые вычисления')">🔬 Объясни просто</button>
 <button class="sugg" onclick="send('Напиши код на Python для бота')">💻 Напиши код</button>
@@ -780,7 +822,7 @@ let uid=null,cid=null,sending=false,mode='login',attachedImage=null;
 const $=id=>document.getElementById(id);
 function toast(t,ty){const e=document.createElement('div');e.className='toast '+(ty||'');e.textContent=t;document.body.appendChild(e);requestAnimationFrame(()=>e.classList.add('show'));setTimeout(()=>{e.classList.remove('show');setTimeout(()=>e.remove(),320)},3200)}
 async function api(u,m,b){try{const o={method:m||'GET',headers:{'Content-Type':'application/json'}};if(b)o.body=JSON.stringify(b);const r=await fetch(u,o);const t=await r.text();try{return JSON.parse(t)}catch(e){return{ok:false,error:'Сервер ['+r.status+']'}}}catch(e){return{ok:false,error:'Нет соединения'}}}
-function toggleSidebar(){const s=$('sidebar');if(innerWidth<=768)s.classList.toggle('open');else s.classList.toggle('closed')}
+function toggleSidebar(){const s=$('sidebar'),app=$('app');if(innerWidth<=768){s.classList.toggle('open')}else{app.classList.toggle('collapsed')}}
 function openOv(id){$(id).classList.add('show')}function closeOv(id){$(id).classList.remove('show')}
 function buyPremium(){openOv('premOverlay')}
 function switchTab(m){mode=m;$('tabLogin').className='tab'+(m==='login'?' active':'');$('tabReg').className='tab'+(m==='reg'?' active':'');$('regWrap').style.display=m==='reg'?'block':'none';$('authTitle').textContent=m==='reg'?'Регистрация':'Вход';$('authBtn').textContent=m==='reg'?'Создать':'Войти'}
@@ -788,13 +830,14 @@ async function submitAuth(){const login=$('authLogin').value.trim(),pw=$('authPa
 async function logout(){await api('/api/logout','POST');location.reload()}
 async function init(){const me=await api('/api/me');if(me.ok){uid=me.user_id;$('authOverlay').classList.remove('show');if(me.avatar)$('avBox').innerHTML='<img style="width:100%;height:100%;object-fit:cover" src="'+me.avatar+'">';else $('avBox').textContent=String(me.name||'?').slice(0,1).toUpperCase();$('uName').textContent=me.name||'Пользователь';await loadChats();await checkStatus()}else openOv('authOverlay')}
 async function checkStatus(){const r=await api('/api/status');if(r.ok){$('uStatus').textContent=r.status_text+' · Ур.'+r.level;const b=$('premBtn');if(r.premium){b.textContent='💎 Premium активен';b.classList.add('act')}else{b.textContent='💎 Купить Premium';b.classList.remove('act')}}}
-async function loadChats(){const r=await api('/api/chats');if(!r.ok)return;const l=$('chatList');l.innerHTML='';(r.chats||[]).forEach(c=>{const d=document.createElement('div');d.className='chat-item'+(c.id===cid?' active':'');d.innerHTML='💬<span class="t">'+esc(c.title||'Чат')+'</span><button class="del" onclick="delChat('+c.id+',event)">✕</button>';d.onclick=()=>openChat(c);l.appendChild(d)})}
-function openChat(c){cid=c.id;$('messages').innerHTML='';$('welcome').style.display='none';$('ctTitle').textContent=c.title||'Чат';(c.messages||[]).forEach(m=>addMsg(m.role,m.content,m.image));if(innerWidth<=768)toggleSidebar()}
+async function loadChats(){const r=await api('/api/chats');if(!r.ok)return;const l=$('chatList');l.innerHTML='';(r.chats||[]).forEach(c=>{const d=document.createElement('div');d.className='chat-item'+(c.id===cid?' active':'');d.innerHTML='💬<span class="t">'+esc(c.title||'Чат')+'</span><button class="del" onclick="delChat('+c.id+',event)">✕</button>';d.onclick=()=>openChat(c.id);l.appendChild(d)})}
+async function openChat(id){try{const r=await api('/api/chat/messages?id='+id);if(!r.ok){toast(r.error||'Ошибка загрузки','err');return}cid=id;$('messages').innerHTML='';$('welcome').style.display='none';$('ctTitle').textContent=r.title||'Чат';(r.messages||[]).forEach(m=>addMsg(m.role,m.content,m.image));refreshActive();if(innerWidth<=768)$('sidebar').classList.remove('open')}catch(e){toast('Не удалось открыть чат','err')}}
+function refreshActive(){document.querySelectorAll('.chat-item').forEach(el=>el.classList.toggle('active',String(el.dataset.cid)===String(cid)))}
 async function newChat(){const r=await api('/api/chat/new','POST');if(r.ok){cid=r.chat_id;$('messages').innerHTML='';$('welcome').style.display='';$('ctTitle').textContent='Новый чат';loadChats()}}
 async function delChat(id,e){e.stopPropagation();await api('/api/chat/delete','POST',{chat_id:id});if(id===cid){cid=null;boxReset()}loadChats()}
 function boxReset(){$('messages').innerHTML='';$('welcome').style.display='';$('ctTitle').textContent='Новый чат'}
 function esc(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function fmtAI(t){if(!t)return'';let out='';for(const line of t.split('\n')){const h=line.match(/^\*\*(.+?)\*\*$/);if(h){out+='<div class="h">'+esc(h[1])+'</div>';continue}const parts=line.split(/(\*\*.*?\*\*)/g);let p='';for(const part of parts){if(part.startsWith('**')&&part.endsWith('**')&&part.length>4)p+='<b>'+esc(part.slice(2,-2))+'</b>';else p+=esc(part)}out+='<div style="margin:2px 0">'+p+'</div>'}return out}
+function fmtAI(t){if(!t)return'';let out='';for(const line of String(t).split('\n')){const h=line.match(/^\*\*(.+?)\*\*$/);if(h){out+='<div class="h">'+esc(h[1])+'</div>';continue}const parts=line.split(/(\*\*.*?\*\*)/g);let p='';for(const part of parts){if(part.startsWith('**')&&part.endsWith('**')&&part.length>4)p+='<b>'+esc(part.slice(2,-2))+'</b>';else p+=esc(part)}out+='<div style="margin:2px 0">'+p+'</div>'}return out}
 function addMsg(role,text,img){const box=$('messages');if($('welcome'))$('welcome').style.display='none';const m=document.createElement('div');m.className='msgrow '+role;let av=role==='user'?'<div class="ma">'+String(uid||'?').slice(0,1).toUpperCase()+'</div>':'<div class="ma">🤖</div>';let content=role==='ai'?fmtAI(text):esc(text);if(img)content+='<img src="'+img+'">';m.innerHTML=av+'<div class="mb">'+content+'</div>';box.appendChild(m);box.scrollTop=box.scrollHeight}
 function addTyping(){const box=$('messages');const m=document.createElement('div');m.className='msgrow ai';m.id='typing';m.innerHTML='<div class="ma">🤖</div><div class="mb typing"><span></span><span></span><span></span></div>';box.appendChild(m);box.scrollTop=box.scrollHeight}
 function rmTyping(){const t=$('typing');if(t)t.remove()}
@@ -808,11 +851,11 @@ function openSupport(){openOv('supportOverlay')}
 async function openSettings(){const r=await api('/api/profile');if(r.ok){$('setName').value=r.name||'';$('setTheme').value=r.theme||'dark';$('profInfo').innerHTML='ID: <b>'+esc(r.user_id)+'</b><br>'+(r.premium?'💎 Premium до '+esc(r.premium_expires):'🔓 Free · 50 запросов/день')+'<br>⭐ Уровень '+r.level+' · XP '+r.xp}openOv('settingsOverlay')}
 async function saveSettings(){const r=await api('/api/settings','POST',{name:$('setName').value.trim()||undefined,theme:$('setTheme').value});if(r.ok){closeOv('settingsOverlay');toast('Сохранено','ok');init()}}
 function acceptCookie(){$('cookie').classList.remove('show');try{localStorage.setItem('sc_cookie','1')}catch(e){}}
-function buildScene(){const s=$('scene');for(let i=0;i<60;i++){const st=document.createElement('div');st.className='star';const sz=(Math.random()*2+1);st.style.width=sz+'px';st.style.height=sz+'px';st.style.left=Math.random()*100+'%';st.style.top=Math.random()*100+'%';st.style.animationDelay=(Math.random()*3)+'s';st.style.animationDuration=(Math.random()*3+2)+'s';s.appendChild(st)}for(let i=0;i<6;i++){const g=document.createElement('div');g.className='gridline';g.style.top=(i*17)+'%';g.style.animationDelay=(i*0.4)+'s'}}
+function buildScene(){const s=$('scene');for(let i=0;i<60;i++){const st=document.createElement('div');st.className='star';const sz=(Math.random()*2+1);st.style.width=sz+'px';st.style.height=sz+'px';st.style.left=Math.random()*100+'%';st.style.top=Math.random()*100+'%';st.style.animationDelay=(Math.random()*3)+'s';st.style.animationDuration=(Math.random()*3+2)+'s';s.appendChild(st)}}
 document.addEventListener('DOMContentLoaded',()=>{buildScene();init();try{if(!localStorage.getItem('sc_cookie'))setTimeout(()=>$('cookie').classList.add('show'),900)}catch(e){}});
 </script></body></html>"""
 
 if __name__ == '__main__':
-    print("AWESOME AI — NEXUS (PostgreSQL relaxdev)")
+    print("AWESOME AI — ULTIMATE (PostgreSQL relaxdev)")
     port = int(os.getenv("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
